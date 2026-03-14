@@ -50,6 +50,16 @@ Em versões mais antigas do Home Assistant, a área de `Apps` ainda pode aparece
 4. Aguarde o primeiro download dos quadros brutos da NOAA e a conversão inicial do cache.
 5. Quando o processamento terminar, a animação ficará disponível na interface e em `/media/goes_timelapse/`.
 
+## Capturas de tela
+
+Busca de municípios:
+
+![Busca de município](docs/images/ui-busca-municipio.png)
+
+Prévia de animação gerada:
+
+![Prévia animada do município São Paulo - SP](docs/images/municipio-3550308.webp)
+
 ## Estrutura do repositório
 
 - `repository.yaml`: metadados do repositório para o Home Assistant.
