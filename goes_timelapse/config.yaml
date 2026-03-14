@@ -1,0 +1,35 @@
+name: GOES Timelapse
+version: "0.1.0"
+slug: goes_timelapse
+description: Gera animações WebP do GOES-19 Banda 2 para municípios do Brasil.
+url: https://github.com/chiconws/br-goes-timelapse
+arch:
+  - amd64
+startup: services
+boot: auto
+init: false
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:satellite-variant
+panel_title: GOES Timelapse
+map:
+  - type: media
+    path: /media
+    read_only: false
+  - type: homeassistant_config
+    path: /config
+    read_only: false
+options:
+  poll_minutes: 5
+  frame_count: 10
+  gif_fps: 2
+  raw_history: 12
+  solar_margin_hours: 1
+  log_level: info
+schema:
+  poll_minutes: int(1,10)
+  frame_count: int(6,20)
+  gif_fps: int(1,4)
+  raw_history: int(10,30)
+  solar_margin_hours: int(0,4)
+  log_level: list(trace|debug|info|warning|error)

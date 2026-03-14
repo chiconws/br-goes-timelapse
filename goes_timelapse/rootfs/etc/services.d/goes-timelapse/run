@@ -1,0 +1,11 @@
+#!/usr/bin/with-contenv bashio
+set -euo pipefail
+
+export GOES_POLL_MINUTES="$(bashio::config 'poll_minutes')"
+export GOES_FRAME_COUNT="$(bashio::config 'frame_count')"
+export GOES_GIF_FPS="$(bashio::config 'gif_fps')"
+export GOES_RAW_HISTORY="$(bashio::config 'raw_history')"
+export GOES_SOLAR_MARGIN_HOURS="$(bashio::config 'solar_margin_hours')"
+export GOES_LOG_LEVEL="$(bashio::config 'log_level')"
+
+exec python3 -m goes_timelapse

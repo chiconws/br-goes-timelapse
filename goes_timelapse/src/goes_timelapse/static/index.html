@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="pt-BR" data-base-path="__BASE_PATH__">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Timelapses GOES de Municípios</title>
+    <link rel="stylesheet" href="__STYLE_HREF__" />
+  </head>
+  <body>
+    <main class="shell">
+      <div class="toolbar">
+        <button
+          id="theme-toggle"
+          class="theme-toggle"
+          type="button"
+          aria-pressed="true"
+          aria-label="Alternar tema"
+        >
+          <span class="theme-toggle-track">
+            <span class="theme-toggle-icon theme-toggle-icon-light" aria-hidden="true">☀</span>
+            <span class="theme-toggle-icon theme-toggle-icon-dark" aria-hidden="true">☾</span>
+            <span class="theme-toggle-thumb" aria-hidden="true"></span>
+          </span>
+        </button>
+      </div>
+
+      <section class="hero">
+        <div>
+          <h1>GOES timelapses de municípios</h1>
+        </div>
+      </section>
+
+      <section id="areas-panel">
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Adicionar município</h2>
+            <p>Busque por nome do município, sigla do estado ou código IBGE.</p>
+          </div>
+          <label class="search-field">
+            <span>Busca</span>
+            <input
+              id="area-search"
+              type="search"
+              placeholder="ex.: Campinas, Vitória - ES, 3205309"
+              autocomplete="off"
+            />
+          </label>
+          <p id="search-feedback" class="search-feedback" hidden></p>
+          <div id="search-results" class="search-results">
+            <p class="empty-state">Digite um nome ou código para buscar.</p>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Municípios acompanhados</h2>
+            <p>As animações WebP são gravadas em <code>/media/goes_timelapse/</code>.</p>
+          </div>
+          <div id="tracked-list" class="tracked-list">
+            <p class="empty-state">Carregando municípios acompanhados...</p>
+          </div>
+        </section>
+      </section>
+
+      <section id="downloads-panel">
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Status e downloads</h2>
+            <p>Visão somente leitura do status do serviço, dos raws em disco e dos downloads em andamento.</p>
+          </div>
+          <div class="downloads-overview">
+            <div class="status-card status-card-inline">
+              <h3>Status do serviço</h3>
+              <dl id="status-grid">
+                <dt>Status</dt>
+                <dd>Carregando...</dd>
+              </dl>
+            </div>
+          </div>
+          <div id="downloads-list" class="download-list">
+            <p class="empty-state">Carregando downloads...</p>
+          </div>
+        </section>
+      </section>
+    </main>
+    <script src="__SCRIPT_SRC__" defer></script>
+  </body>
+</html>

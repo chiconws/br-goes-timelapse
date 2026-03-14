@@ -1,0 +1,8 @@
+aiohttp>=3.10,<4.0
+astral>=3.2,<4.0
+fastapi>=0.115,<1.0
+numpy>=2.1,<3.0
+pillow>=11.0,<12.0
+polar2grid>=3.3,<4.0
+rasterio>=1.4,<2.0
+uvicorn>=0.34,<1.0
