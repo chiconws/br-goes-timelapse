@@ -78,26 +78,29 @@ class GeoTiffRasterSource:
         dst_bounds: tuple[float, float, float, float] | None = None,
     ) -> Image.Image:
         dataset = self.dataset
+        if output_size and dst_bounds:
+            return self._read_reprojected_crop(window, output_size, dst_bounds)
+
         if dataset.count >= 3 and all(dtype == "uint8" for dtype in dataset.dtypes[:3]):
-            red = dataset.read(1, window=window)
-            green = dataset.read(2, window=window)
-            blue = dataset.read(3, window=window)
+            red = dataset.read(1, window=window, boundless=True)
+            green = dataset.read(2, window=window, boundless=True)
+            blue = dataset.read(3, window=window, boundless=True)
             if dataset.count >= 4:
-                alpha = dataset.read(4, window=window)
+                alpha = dataset.read(4, window=window, boundless=True)
             else:
                 alpha = np.full(red.shape, 255, dtype=np.uint8)
             rgba = np.dstack((red, green, blue, alpha)).astype(np.uint8)
             return Image.fromarray(rgba, mode="RGBA")
 
         if dataset.count >= 2 and dataset.dtypes[0] == "uint8" and dataset.dtypes[1] == "uint8":
-            grayscale = dataset.read(1, window=window)
-            alpha = dataset.read(2, window=window)
+            grayscale = dataset.read(1, window=window, boundless=True)
+            alpha = dataset.read(2, window=window, boundless=True)
             rgba = np.dstack((grayscale, grayscale, grayscale, alpha)).astype(np.uint8)
             return Image.fromarray(rgba, mode="RGBA")
 
-        subset = dataset.read(1, window=window).astype(np.float32)
+        subset = dataset.read(1, window=window, boundless=True).astype(np.float32)
         if dataset.count >= 2:
-            mask = dataset.read(2, window=window)
+            mask = dataset.read(2, window=window, boundless=True)
             subset = np.where(mask != 0, subset, np.nan)
 
         grayscale = _normalize_to_uint8(subset)
@@ -107,6 +110,137 @@ class GeoTiffRasterSource:
         if self._vrt is not None:
             self._vrt.close()
         self._dataset.close()
+
+    def _read_reprojected_crop(
+        self,
+        window: Window,
+        output_size: tuple[int, int],
+        dst_bounds: tuple[float, float, float, float],
+    ) -> Image.Image:
+        dataset = self.dataset
+        src_transform = window_transform(window, dataset.transform)
+        output_width, output_height = output_size
+        dst_transform = from_bounds(
+            dst_bounds[0],
+            dst_bounds[1],
+            dst_bounds[2],
+            dst_bounds[3],
+            output_width,
+            output_height,
+        )
+
+        if dataset.count >= 3 and all(dtype == "uint8" for dtype in dataset.dtypes[:3]):
+            red = self._reproject_band(
+                dataset.read(1, window=window, boundless=True),
+                src_transform=src_transform,
+                dst_transform=dst_transform,
+                dst_shape=(output_height, output_width),
+                dtype=np.uint8,
+                fill_value=0,
+                resampling=Resampling.bilinear,
+            )
+            green = self._reproject_band(
+                dataset.read(2, window=window, boundless=True),
+                src_transform=src_transform,
+                dst_transform=dst_transform,
+                dst_shape=(output_height, output_width),
+                dtype=np.uint8,
+                fill_value=0,
+                resampling=Resampling.bilinear,
+            )
+            blue = self._reproject_band(
+                dataset.read(3, window=window, boundless=True),
+                src_transform=src_transform,
+                dst_transform=dst_transform,
+                dst_shape=(output_height, output_width),
+                dtype=np.uint8,
+                fill_value=0,
+                resampling=Resampling.bilinear,
+            )
+            if dataset.count >= 4:
+                alpha = self._reproject_band(
+                    dataset.read(4, window=window, boundless=True),
+                    src_transform=src_transform,
+                    dst_transform=dst_transform,
+                    dst_shape=(output_height, output_width),
+                    dtype=np.uint8,
+                    fill_value=0,
+                    resampling=Resampling.nearest,
+                )
+            else:
+                alpha = np.full((output_height, output_width), 255, dtype=np.uint8)
+            rgba = np.dstack((red, green, blue, alpha)).astype(np.uint8)
+            return Image.fromarray(rgba, mode="RGBA")
+
+        if dataset.count >= 2 and dataset.dtypes[0] == "uint8" and dataset.dtypes[1] == "uint8":
+            grayscale = self._reproject_band(
+                dataset.read(1, window=window, boundless=True),
+                src_transform=src_transform,
+                dst_transform=dst_transform,
+                dst_shape=(output_height, output_width),
+                dtype=np.uint8,
+                fill_value=0,
+                resampling=Resampling.bilinear,
+            )
+            alpha = self._reproject_band(
+                dataset.read(2, window=window, boundless=True),
+                src_transform=src_transform,
+                dst_transform=dst_transform,
+                dst_shape=(output_height, output_width),
+                dtype=np.uint8,
+                fill_value=0,
+                resampling=Resampling.nearest,
+            )
+            rgba = np.dstack((grayscale, grayscale, grayscale, alpha)).astype(np.uint8)
+            return Image.fromarray(rgba, mode="RGBA")
+
+        subset = self._reproject_band(
+            dataset.read(1, window=window, boundless=True).astype(np.float32),
+            src_transform=src_transform,
+            dst_transform=dst_transform,
+            dst_shape=(output_height, output_width),
+            dtype=np.float32,
+            fill_value=np.nan,
+            resampling=Resampling.bilinear,
+        )
+        if dataset.count >= 2:
+            mask = self._reproject_band(
+                dataset.read(2, window=window, boundless=True),
+                src_transform=src_transform,
+                dst_transform=dst_transform,
+                dst_shape=(output_height, output_width),
+                dtype=np.uint8,
+                fill_value=0,
+                resampling=Resampling.nearest,
+            )
+            subset = np.where(mask != 0, subset, np.nan)
+
+        grayscale = _normalize_to_uint8(subset)
+        return Image.fromarray(grayscale, mode="L").convert("RGBA")
+
+    def _reproject_band(
+        self,
+        source: np.ndarray,
+        *,
+        src_transform: Affine,
+        dst_transform: Affine,
+        dst_shape: tuple[int, int],
+        dtype,
+        fill_value,
+        resampling: Resampling,
+    ) -> np.ndarray:
+        destination = np.full(dst_shape, fill_value, dtype=dtype)
+        reproject(
+            source=source,
+            destination=destination,
+            src_transform=src_transform,
+            src_crs=self.crs,
+            dst_transform=dst_transform,
+            dst_crs=WGS84_CRS,
+            dst_nodata=fill_value,
+            resampling=resampling,
+        )
+        return destination
 
 
 class GoesNetcdfRasterSource:
