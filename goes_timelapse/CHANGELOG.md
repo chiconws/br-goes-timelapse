@@ -1,6 +1,12 @@
 # Histórico de mudanças
 
-## 0.1.0
+## 1.0.1
+
+- Corrige o alinhamento entre os contornos e a imagem GOES no render final.
+- Reforça a regeneração do cache bruto para evitar reaproveitar `GeoTIFFs` antigos com cobertura incorreta.
+- Ajusta a cobertura do `GeoTIFF` do Brasil para dar mais folga nas bordas.
+
+## 1.0.0
 
 - Primeira versão pública do app para Home Assistant.
 - Suporte a municípios brasileiros com busca por nome e código IBGE.

@@ -1,5 +1,5 @@
 name: GOES Timelapse
-version: "0.1.0"
+version: "1.0.1"
 slug: goes_timelapse
 description: Gera animações WebP do GOES-19 Banda 2 para municípios do Brasil.
 url: https://github.com/chiconws/br-goes-timelapse
