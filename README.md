@@ -60,6 +60,8 @@ Prévia de animação gerada:
 
 ![Prévia animada do município São Paulo - SP](docs/images/municipio-3550308.webp)
 
+![Prévia animada do município Xique-Xique - BA](docs/images/municipio-2933604.webp)
+
 ## Estrutura do repositório
 
 - `repository.yaml`: metadados do repositório para o Home Assistant.

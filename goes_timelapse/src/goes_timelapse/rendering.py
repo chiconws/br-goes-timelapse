@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -22,6 +23,7 @@ from goes_timelapse.raster_sources import WGS84_CRS, open_raster_source
 BRAZIL_TZ = ZoneInfo("America/Sao_Paulo")
 LEGACY_TIMESTAMP_PATTERN = re.compile(r"^(\d{11})_")
 NETCDF_TIMESTAMP_PATTERN = re.compile(r"_s(\d{13,14})_")
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True, frozen=True)
@@ -114,7 +116,10 @@ class AreaRenderer:
     def _build_render_plan(
         self, geometry: AreaGeometry, src
     ) -> RenderPlan:
-        dst_bounds = self._build_destination_bounds(geometry)
+        dst_bounds = self._fit_destination_bounds_to_source(
+            self._build_destination_bounds(geometry),
+            src,
+        )
         window = self._build_source_window(src, dst_bounds)
         crop_width = int(window.width)
         crop_height = int(window.height)
@@ -149,6 +154,49 @@ class AreaRenderer:
             output_size=(output_width, output_height),
         )
 
+    def _fit_destination_bounds_to_source(
+        self,
+        dst_bounds: tuple[float, float, float, float],
+        src,
+    ) -> tuple[float, float, float, float]:
+        source_left, source_bottom, source_right, source_top = self._source_bounds_in_wgs84(src)
+        left, bottom, right, top = dst_bounds
+        width = right - left
+        height = top - bottom
+        source_width = source_right - source_left
+        source_height = source_top - source_bottom
+
+        if width >= source_width:
+            left, right = source_left, source_right
+        else:
+            if left < source_left:
+                shift = source_left - left
+                left += shift
+                right += shift
+            if right > source_right:
+                shift = right - source_right
+                left -= shift
+                right -= shift
+
+        if height >= source_height:
+            bottom, top = source_bottom, source_top
+        else:
+            if bottom < source_bottom:
+                shift = source_bottom - bottom
+                bottom += shift
+                top += shift
+            if top > source_top:
+                shift = top - source_top
+                bottom -= shift
+                top -= shift
+
+        return (
+            max(left, source_left),
+            max(bottom, source_bottom),
+            min(right, source_right),
+            min(top, source_top),
+        )
+
     def _render_frame(
         self,
         tif_path: Path,
@@ -162,6 +210,13 @@ class AreaRenderer:
                 output_size=plan.output_size,
                 dst_bounds=plan.dst_bounds,
             )
+        if image.size[0] <= 0 or image.size[1] <= 0:
+            LOGGER.warning(
+                "Raw frame %s produced an empty crop for %s; using a blank fallback frame",
+                tif_path.name,
+                area.area_id,
+            )
+            image = Image.new("RGBA", plan.output_size, (0, 0, 0, 255))
         if image.size != plan.output_size:
             width_scale = plan.output_size[0] / image.size[0]
             height_scale = plan.output_size[1] / image.size[1]
@@ -377,6 +432,15 @@ class AreaRenderer:
             [point[1] for point in samples],
         )
         return (min(x_values), min(y_values), max(x_values), max(y_values))
+
+    def _source_bounds_in_wgs84(self, src) -> tuple[float, float, float, float]:
+        source_bounds = window_bounds(
+            Window(col_off=0, row_off=0, width=src.width, height=src.height),
+            src.transform,
+        )
+        if src.crs == WGS84_CRS:
+            return source_bounds
+        return transform_bounds(src.crs, WGS84_CRS, *source_bounds, densify_pts=21)
 
     def _scale_polygon_to_output(
         self,

@@ -11,8 +11,9 @@ from urllib.parse import quote
 import xml.etree.ElementTree as ET
 
 import aiohttp
+import rasterio
 
-from goes_timelapse.geo2grid import Geo2GridConverter
+from goes_timelapse.geo2grid import BRAZIL_LONLAT_BBOX, Geo2GridConverter
 
 
 LOGGER = logging.getLogger(__name__)
@@ -75,6 +76,9 @@ class GoesDownloader:
         self._progress_callback = progress_callback
         self._source_dir.mkdir(parents=True, exist_ok=True)
         self._raw_dir.mkdir(parents=True, exist_ok=True)
+
+    def set_ll_bbox(self, ll_bbox: tuple[float, float, float, float]) -> None:
+        self._converter.set_ll_bbox(ll_bbox)
 
     @staticmethod
     def parse_listing(xml_payload: str) -> list[str]:
@@ -291,8 +295,10 @@ class GoesDownloader:
     ) -> int:
         output_filename = self._converter.output_filename(filename)
         destination = self._raw_dir / output_filename
-        if destination.exists():
+        if destination.exists() and self._is_expected_brazil_tiff(destination):
             return 0
+        if destination.exists():
+            destination.unlink(missing_ok=True)
 
         source_path = self._source_dir / filename
         temporary_path = source_path.with_suffix(source_path.suffix + ".part")
@@ -339,6 +345,23 @@ class GoesDownloader:
                 raise
 
         return 0
+
+    @staticmethod
+    def _is_expected_brazil_tiff(path: Path) -> bool:
+        try:
+            with rasterio.open(path) as dataset:
+                left, bottom, right, top = dataset.bounds
+        except Exception:
+            return False
+
+        expected_left, expected_bottom, expected_right, expected_top = BRAZIL_LONLAT_BBOX
+        tolerance = 1.0
+        return (
+            left <= expected_left + tolerance
+            and bottom <= expected_bottom + tolerance
+            and right >= expected_right - tolerance
+            and top >= expected_top - tolerance
+        )
 
     def _cleanup_old_files(self, keep_filenames: list[str]) -> None:
         keep = set(keep_filenames)

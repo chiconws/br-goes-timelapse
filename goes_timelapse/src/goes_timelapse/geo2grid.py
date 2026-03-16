@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 
 
-BRAZIL_LONLAT_BBOX = (-74.0, -34.0, -32.0, 6.0)
+BRAZIL_LONLAT_BBOX = (-75.5, -35.5, -30.5, 7.5)
 
 
 class Geo2GridConverter:
@@ -15,8 +15,17 @@ class Geo2GridConverter:
         *,
         command: str = "geo2grid.sh",
         ll_bbox: tuple[float, float, float, float] = BRAZIL_LONLAT_BBOX,
+        grid: str = "wgs84_fit",
+        method: str = "nearest",
+        num_workers: int = 1,
     ) -> None:
         self._command = command
+        self._ll_bbox = ll_bbox
+        self._grid = grid
+        self._method = method
+        self._num_workers = num_workers
+
+    def set_ll_bbox(self, ll_bbox: tuple[float, float, float, float]) -> None:
         self._ll_bbox = ll_bbox
 
     def output_filename(self, source_filename: str) -> str:
@@ -40,6 +49,12 @@ class Geo2GridConverter:
                 "geotiff",
                 "-p",
                 "C02",
+                "-g",
+                self._grid,
+                "--method",
+                self._method,
+                "--num-workers",
+                str(self._num_workers),
                 "--ll-bbox",
                 *(str(value) for value in self._ll_bbox),
                 "--output-filename",
