@@ -1,5 +1,10 @@
 # Histórico de mudanças
 
+## 1.0.2
+
+- Ajusta a janela solar padrão para usar `0h` de margem, limitando os downloads da Banda 2 ao período entre nascer e pôr do sol.
+- Dispara uma checagem imediata dos raws quando o primeiro município é adicionado, sem esperar o próximo ciclo de polling.
+
 ## 1.0.1
 
 - Corrige o alinhamento entre os contornos e a imagem GOES no render final.

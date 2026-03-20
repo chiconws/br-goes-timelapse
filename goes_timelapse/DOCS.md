@@ -14,7 +14,7 @@
 - `frame_count`: quantidade de quadros usados em cada animação WebP.
 - `gif_fps`: velocidade de reprodução da animação gerada.
 - `raw_history`: quantidade de `GeoTIFFs` recentes mantidos em disco para reprocessamento.
-- `solar_margin_hours`: margem, em horas, aplicada antes do nascer do sol e depois do pôr do sol para permitir downloads da Banda 2. O padrão é `1`.
+- `solar_margin_hours`: margem, em horas, aplicada antes do nascer do sol e depois do pôr do sol para permitir downloads da Banda 2. O padrão é `0`, então os downloads acontecem apenas entre o nascer e o pôr do sol.
 - `log_level`: nível de detalhamento dos logs do app.
 
 ## Uso de rede e armazenamento

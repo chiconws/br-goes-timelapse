@@ -76,6 +76,8 @@ class GoesTimelapseService:
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._queued_ids: set[str] = set()
         self._tasks: list[asyncio.Task[None]] = []
+        self._refresh_lock = asyncio.Lock()
+        self._immediate_refresh_task: asyncio.Task[None] | None = None
         self._start_background_tasks = start_background_tasks
         self._status: dict[str, object] = {
             "last_poll_started_at": None,
@@ -104,6 +106,12 @@ class GoesTimelapseService:
             self._tasks.append(asyncio.create_task(self._worker_loop(), name="goes-worker"))
 
     async def stop(self) -> None:
+        if self._immediate_refresh_task is not None:
+            self._immediate_refresh_task.cancel()
+            try:
+                await self._immediate_refresh_task
+            except asyncio.CancelledError:
+                pass
         for task in self._tasks:
             task.cancel()
         for task in self._tasks:
@@ -117,8 +125,10 @@ class GoesTimelapseService:
         area = self.catalog.get(area_id)
         if area is None:
             raise KeyError(area_id)
+        already_tracked = self.state_store.is_tracked(area_id)
+        tracked_before = self.state_store.count_tracked()
         if (
-            not self.state_store.is_tracked(area_id)
+            not already_tracked
             and self.state_store.count_tracked() >= self.settings.max_tracked
         ):
             raise ValueError(
@@ -126,6 +136,11 @@ class GoesTimelapseService:
             )
         self.state_store.upsert_tracked(area, status="queued")
         await self.enqueue(area_id)
+        if not already_tracked and tracked_before == 0:
+            if self._start_background_tasks:
+                self._schedule_immediate_refresh()
+            else:
+                await self.refresh_raw_frames()
         tracked = self.state_store.get_tracked(area_id)
         assert tracked is not None
         return tracked
@@ -220,56 +235,71 @@ class GoesTimelapseService:
             await asyncio.sleep(poll_seconds)
 
     async def refresh_raw_frames(self) -> None:
-        self._status["last_poll_started_at"] = _utc_now()
-        self._status["last_poll_error"] = None
-        self._status["last_poll_new_downloads"] = 0
-        plans = await self._build_download_plans()
-        error_messages: list[str] = []
-        total_downloads = 0
+        async with self._refresh_lock:
+            self._status["last_poll_started_at"] = _utc_now()
+            self._status["last_poll_error"] = None
+            self._status["last_poll_new_downloads"] = 0
+            plans = await self._build_download_plans()
+            error_messages: list[str] = []
+            total_downloads = 0
 
-        try:
-            for plan in plans:
-                self._apply_download_plan(plan)
+            try:
+                for plan in plans:
+                    self._apply_download_plan(plan)
 
-            for plan in plans:
-                if not plan.should_download:
-                    continue
+                for plan in plans:
+                    if not plan.should_download:
+                        continue
 
-                report: DownloadReport | None = None
-                try:
-                    report = await self._downloaders[plan.source_key].refresh_latest()
-                except Exception as err:
-                    LOGGER.exception("Raw refresh failed for %s", plan.source_key)
-                    if self._raw_files_for_source(plan.source_key):
-                        self._mark_source_partial_due_to_error(plan.source_key)
-                    else:
-                        self._mark_source_error(plan.source_key, str(err))
+                    report: DownloadReport | None = None
+                    try:
+                        report = await self._downloaders[plan.source_key].refresh_latest()
+                    except Exception as err:
+                        LOGGER.exception("Raw refresh failed for %s", plan.source_key)
+                        if self._raw_files_for_source(plan.source_key):
+                            self._mark_source_partial_due_to_error(plan.source_key)
+                        else:
+                            self._mark_source_error(plan.source_key, str(err))
+                            error_messages.append(
+                                f"{RAW_SOURCE_LABELS[plan.source_key]}: {err}"
+                            )
+                        continue
+
+                    self._finalize_download_status(plan.source_key, report)
+                    total_downloads += report.downloaded_count
+                    if report.failed_count and not report.kept_files:
                         error_messages.append(
-                            f"{RAW_SOURCE_LABELS[plan.source_key]}: {err}"
+                            f"{RAW_SOURCE_LABELS[plan.source_key]}: falha em {report.failed_count} arquivo(s)"
                         )
-                    continue
+                    elif report.failed_count:
+                        error_messages.append(
+                            f"{RAW_SOURCE_LABELS[plan.source_key]}: {report.failed_count} arquivo(s) falharam"
+                        )
 
-                self._finalize_download_status(plan.source_key, report)
-                total_downloads += report.downloaded_count
-                if report.failed_count and not report.kept_files:
-                    error_messages.append(
-                        f"{RAW_SOURCE_LABELS[plan.source_key]}: falha em {report.failed_count} arquivo(s)"
-                    )
-                elif report.failed_count:
-                    error_messages.append(
-                        f"{RAW_SOURCE_LABELS[plan.source_key]}: {report.failed_count} arquivo(s) falharam"
-                    )
+                    if report.kept_files and report.downloaded_count > 0:
+                        for area_id in plan.tracked_area_ids:
+                            self.state_store.set_status(area_id, "queued", last_error=None)
+                            await self.enqueue(area_id)
+            finally:
+                self._status["last_poll_finished_at"] = _utc_now()
 
-                if report.kept_files and report.downloaded_count > 0:
-                    for area_id in plan.tracked_area_ids:
-                        self.state_store.set_status(area_id, "queued", last_error=None)
-                        await self.enqueue(area_id)
-        finally:
-            self._status["last_poll_finished_at"] = _utc_now()
+            self._status["last_poll_new_downloads"] = total_downloads
+            if error_messages:
+                self._status["last_poll_error"] = " | ".join(error_messages)
 
-        self._status["last_poll_new_downloads"] = total_downloads
-        if error_messages:
-            self._status["last_poll_error"] = " | ".join(error_messages)
+    def _schedule_immediate_refresh(self) -> None:
+        if self._immediate_refresh_task is not None and not self._immediate_refresh_task.done():
+            return
+        self._immediate_refresh_task = asyncio.create_task(
+            self._run_immediate_refresh(),
+            name="goes-immediate-refresh",
+        )
+
+    async def _run_immediate_refresh(self) -> None:
+        try:
+            await self.refresh_raw_frames()
+        except Exception:  # pragma: no cover
+            LOGGER.exception("Immediate GOES refresh failed")
 
     async def _worker_loop(self) -> None:
         while True:

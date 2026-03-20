@@ -6,7 +6,7 @@ App do Home Assistant para acompanhar municípios brasileiros com imagens do sat
 
 - Busca municípios brasileiros por nome ou código IBGE.
 - Mantém até `5` municípios acompanhados ao mesmo tempo.
-- Baixa os quadros oficiais da NOAA na Banda 2 visível durante a janela solar.
+- Baixa os quadros oficiais da NOAA na Banda 2 visível entre o nascer e o pôr do sol por padrão.
 - Converte os raws para um cache local otimizado antes de renderizar.
 - Gera animações WebP em `/media/goes_timelapse/`.
 

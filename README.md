@@ -19,7 +19,7 @@ Este repositório contém um app do Home Assistant para acompanhar municípios b
 
 Este app usa os produtos oficiais `ABI-L1b-RadF-M6C02` da NOAA, em formato `netCDF`, e converte cada quadro para um `GeoTIFF` local do Brasil antes de renderizar as animações.
 
-- O download bruto acontece só na janela solar configurada. Com o padrão atual, isso significa aproximadamente `1 hora antes do nascer do sol` até `1 hora depois do pôr do sol`.
+- O download bruto acontece só na janela solar configurada. Com o padrão atual, isso significa do `nascer do sol` até o `pôr do sol`.
 - Cada raw oficial costuma ter algo em torno de `390 MB` a `425 MB`.
 - Como o produto full disk é atualizado em intervalos de `10 minutos`, a estimativa prática fica na faixa de `28 a 34 GB por dia` quando há municípios acompanhados.
 - Em instalações novas, reinícios ou recuperação de indisponibilidade, pode haver um pico temporário enquanto o cache bruto é recomposto.

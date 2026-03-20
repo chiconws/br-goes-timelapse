@@ -89,7 +89,7 @@ class Settings:
             frame_count=_env_int("GOES_FRAME_COUNT", 10),
             gif_fps=_env_int("GOES_GIF_FPS", 2),
             raw_history=_env_int("GOES_RAW_HISTORY", 12),
-            solar_margin_hours=_env_int("GOES_SOLAR_MARGIN_HOURS", 1),
+            solar_margin_hours=_env_int("GOES_SOLAR_MARGIN_HOURS", 0),
             max_tracked=_env_int("GOES_MAX_TRACKED", 5),
             log_level=log_level,
             data_dir=data_dir,
