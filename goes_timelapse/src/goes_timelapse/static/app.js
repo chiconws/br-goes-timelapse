@@ -3,6 +3,7 @@
 
   var SEARCH_DEBOUNCE_MS = 180;
   var STATUS_REFRESH_MS = 15000;
+  var ACTIVE_DOWNLOAD_REFRESH_MS = 1500;
   var THEME_STORAGE_KEY = "goes_timelapse_theme";
   var basePath = "/";
 
@@ -19,6 +20,7 @@
     pendingPins: {},
     searchRequestId: 0,
     searchTimer: null,
+    refreshTimer: null,
   };
 
   var elements = {};
@@ -53,15 +55,22 @@
     elements.searchResults.addEventListener("click", onSearchResultClick);
     elements.trackedList.addEventListener("click", onTrackedActionClick);
 
-    loadStatus();
-    loadTracked();
-    loadDownloads();
-    window.setInterval(function () {
-      loadStatus();
-      loadTracked();
-      loadDownloads();
-    }, STATUS_REFRESH_MS);
+    refreshDashboard();
   });
+
+  function refreshDashboard() {
+    return Promise.all([loadStatus(), loadTracked(), loadDownloads()]).finally(scheduleRefresh);
+  }
+
+  function scheduleRefresh() {
+    if (state.refreshTimer) {
+      window.clearTimeout(state.refreshTimer);
+    }
+    state.refreshTimer = window.setTimeout(
+      refreshDashboard,
+      hasActiveDownloads() ? ACTIVE_DOWNLOAD_REFRESH_MS : STATUS_REFRESH_MS
+    );
+  }
 
   function onSearchInput(event) {
     var value = event.target.value || "";
@@ -467,10 +476,10 @@
       escapeHtml(String(source.file_count || 0)) +
       "</dd>" +
       "<dt>Último baixado</dt><dd>" +
-      escapeHtml(source.last_downloaded || "Nenhum") +
+      renderFilenameValue(source.last_downloaded) +
       "</dd>" +
       "<dt>Último disponível</dt><dd>" +
-      escapeHtml(source.latest_available || "Nenhum") +
+      renderFilenameValue(source.latest_available) +
       "</dd>" +
       "<dt>Tamanho em disco</dt><dd>" +
       escapeHtml(formatBytes(source.disk_usage_bytes || 0)) +
@@ -495,15 +504,21 @@
   }
 
   function renderActiveDownload(item) {
+    var fileLabel = describeRawFile(item.filename || "");
     var percent = item.percent;
     var width = percent === null || percent === undefined ? 4 : Math.max(4, Math.min(100, percent));
     return (
       '<div class="download-item">' +
       '<div class="download-item-head">' +
+      '<div class="download-item-copy">' +
       '<strong class="download-item-name">' +
-      escapeHtml(item.filename || "") +
+      escapeHtml(fileLabel.primary) +
       "</strong>" +
-      "<span>" +
+      '<span class="download-item-meta">' +
+      escapeHtml(fileLabel.secondary) +
+      "</span>" +
+      "</div>" +
+      '<span class="download-item-size">' +
       escapeHtml(formatBytes(item.downloaded_bytes || 0)) +
       " / " +
       escapeHtml(item.total_bytes ? formatBytes(item.total_bytes) : "tamanho desconhecido") +
@@ -518,12 +533,18 @@
   }
 
   function renderRawFile(item) {
+    var fileLabel = describeRawFile(item.filename || "");
     return (
       '<li class="raw-file-item">' +
+      '<div class="raw-file-copy">' +
       '<strong class="raw-file-name">' +
-      escapeHtml(item.filename || "") +
+      escapeHtml(fileLabel.primary) +
       "</strong>" +
-      "<span>" +
+      '<span class="raw-file-meta">' +
+      escapeHtml(fileLabel.secondary) +
+      "</span>" +
+      "</div>" +
+      '<span class="raw-file-size">' +
       escapeHtml(formatBytes(item.size_bytes || 0)) +
       "</span>" +
       "</li>"
@@ -805,6 +826,76 @@
     seconds = String(date.getSeconds()).padStart(2, "0");
 
     return hours + ":" + minutes + ":" + seconds + " " + day + "/" + month + "/" + year;
+  }
+
+  function renderFilenameValue(filename) {
+    var fileLabel = describeRawFile(filename || "");
+    return (
+      '<span class="file-meta-value">' +
+      '<strong class="file-meta-primary">' +
+      escapeHtml(fileLabel.primary) +
+      "</strong>" +
+      '<span class="file-meta-secondary">' +
+      escapeHtml(fileLabel.secondary) +
+      "</span>" +
+      "</span>"
+    );
+  }
+
+  function describeRawFile(filename) {
+    var captureDate = parseGoesCaptureDate(filename);
+    var bandMatch = String(filename || "").match(/M6(C\d{2})/);
+    var bandLabel = bandMatch ? bandMatch[1] : "";
+    var shortName = String(filename || "");
+
+    if (captureDate) {
+      return {
+        primary: formatCaptureDate(captureDate),
+        secondary: (bandLabel ? bandLabel + " • " : "") + shortName,
+      };
+    }
+
+    return {
+      primary: shortName || "Nenhum",
+      secondary: bandLabel ? bandLabel : "",
+    };
+  }
+
+  function parseGoesCaptureDate(filename) {
+    var match = String(filename || "").match(/_s(\d{4})(\d{3})(\d{2})(\d{2})/);
+    var start;
+
+    if (!match) {
+      return null;
+    }
+
+    start = new Date(Date.UTC(Number(match[1]), 0, 1, Number(match[3]), Number(match[4]), 0));
+    start.setUTCDate(start.getUTCDate() + Number(match[2]) - 1);
+    return start;
+  }
+
+  function formatCaptureDate(date) {
+    var day = String(date.getDate()).padStart(2, "0");
+    var month = String(date.getMonth() + 1).padStart(2, "0");
+    var year = String(date.getFullYear());
+    var hours = String(date.getHours()).padStart(2, "0");
+    var minutes = String(date.getMinutes()).padStart(2, "0");
+
+    return day + "/" + month + "/" + year + " " + hours + ":" + minutes;
+  }
+
+  function hasActiveDownloads() {
+    var index;
+    for (index = 0; index < state.downloads.length; index += 1) {
+      if (
+        state.downloads[index].phase === "downloading" ||
+        (Array.isArray(state.downloads[index].active_downloads) &&
+          state.downloads[index].active_downloads.length > 0)
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   function safeValue(value) {
