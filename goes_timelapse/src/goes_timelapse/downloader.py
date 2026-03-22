@@ -18,18 +18,12 @@ from goes_timelapse.geo2grid import BRAZIL_LONLAT_BBOX, Geo2GridConverter
 
 LOGGER = logging.getLogger(__name__)
 NODD_PRODUCT_PREFIX = "ABI-L1b-RadF"
-NODD_BAND_TOKEN = "M6C02"
 NODD_LISTING_PREFIX_TEMPLATE = (
     "{product}/{year}/{julian_day}/{hour}/OR_{product}-{band}_G19_"
-)
-NODD_KEY_PATTERN = re.compile(
-    r"(?P<key>ABI-L1b-RadF/\d{4}/\d{3}/\d{2}/OR_ABI-L1b-RadF-M6C02_G19_"
-    r"s(?P<timestamp>\d{13,14})_e\d{13,14}_c\d{13,14}\.nc)"
 )
 BOOTSTRAP_RAW_HISTORY = 3
 DOWNLOAD_RETRY_ATTEMPTS = 5
 DOWNLOAD_CONCURRENCY = 1
-DOWNLOAD_FAILURE_BUFFER = 6
 LOOKBACK_HOURS = 4
 REQUEST_HEADERS = {
     "Accept-Encoding": "identity",
@@ -65,6 +59,7 @@ class GoesDownloader:
         raw_dir: Path,
         raw_history: int,
         *,
+        band: str = "C02",
         converter: Geo2GridConverter | None = None,
         progress_callback: Callable[[dict[str, object]], None] | None = None,
     ):
@@ -72,7 +67,14 @@ class GoesDownloader:
         self._source_dir = source_dir
         self._raw_dir = raw_dir
         self._raw_history = raw_history
-        self._converter = converter or Geo2GridConverter()
+        self._band = band
+        self._band_token = f"M6{band}"
+        self._key_pattern = re.compile(
+            rf"(?P<key>{re.escape(NODD_PRODUCT_PREFIX)}/\d{{4}}/\d{{3}}/\d{{2}}/"
+            rf"OR_{re.escape(NODD_PRODUCT_PREFIX)}-{re.escape(self._band_token)}_G19_"
+            rf"s(?P<timestamp>\d{{13,14}})_e\d{{13,14}}_c\d{{13,14}}\.nc)"
+        )
+        self._converter = converter or Geo2GridConverter(product=band)
         self._progress_callback = progress_callback
         self._source_dir.mkdir(parents=True, exist_ok=True)
         self._raw_dir.mkdir(parents=True, exist_ok=True)
@@ -80,15 +82,14 @@ class GoesDownloader:
     def set_ll_bbox(self, ll_bbox: tuple[float, float, float, float]) -> None:
         self._converter.set_ll_bbox(ll_bbox)
 
-    @staticmethod
-    def parse_listing(xml_payload: str) -> list[str]:
+    def parse_listing(self, xml_payload: str) -> list[str]:
         root = ET.fromstring(xml_payload)
         keys: list[tuple[str, str]] = []
         for node in root.findall("s3:Contents", S3_XML_NAMESPACE):
             key_node = node.find("s3:Key", S3_XML_NAMESPACE)
             if key_node is None or not key_node.text:
                 continue
-            match = NODD_KEY_PATTERN.fullmatch(key_node.text)
+            match = self._key_pattern.fullmatch(key_node.text)
             if match is None:
                 continue
             keys.append((match.group("timestamp"), Path(match.group("key")).name))
@@ -96,7 +97,7 @@ class GoesDownloader:
         keys = sorted(set(keys), key=lambda item: item[0], reverse=True)
         return [filename for _, filename in keys]
 
-    async def refresh_latest(self) -> DownloadReport:
+    async def refresh_latest(self, *, download_missing: bool = True) -> DownloadReport:
         connector = aiohttp.TCPConnector(
             limit=DOWNLOAD_CONCURRENCY,
             force_close=True,
@@ -119,12 +120,12 @@ class GoesDownloader:
                 )
 
             target_history = self._target_history()
-            candidate_sources = source_filenames[: self._candidate_history(target_history)]
+            candidate_sources = source_filenames[:target_history]
             candidate_outputs = [
                 self._converter.output_filename(filename) for filename in candidate_sources
             ]
             self._emit_progress(
-                phase="downloading" if candidate_outputs else "idle",
+                phase="downloading" if download_missing and candidate_outputs else "idle",
                 attempted_count=len(candidate_outputs),
                 completed_count=0,
                 failed_count=0,
@@ -133,6 +134,24 @@ class GoesDownloader:
                 current_file=None,
                 last_downloaded=None,
             )
+            if not download_missing:
+                keep_filenames = self._build_keep_filenames(source_filenames, target_history)
+                self._cleanup_old_files(keep_filenames)
+                kept_files = [
+                    self._raw_dir / filename
+                    for filename in keep_filenames
+                    if (self._raw_dir / filename).exists()
+                ]
+                return DownloadReport(
+                    kept_files=kept_files,
+                    downloaded_count=0,
+                    attempted_count=0,
+                    failed_count=0,
+                    last_downloaded=None,
+                    latest_available=candidate_outputs[0] if candidate_outputs else None,
+                    failed_files=[],
+                )
+
             semaphore = asyncio.Semaphore(DOWNLOAD_CONCURRENCY)
 
             completed_count = 0
@@ -239,11 +258,7 @@ class GoesDownloader:
 
             results = await asyncio.gather(*(download(name) for name in candidate_sources))
 
-        keep_filenames = [
-            self._converter.output_filename(source_filename)
-            for source_filename in candidate_sources
-            if (self._raw_dir / self._converter.output_filename(source_filename)).exists()
-        ][:target_history]
+        keep_filenames = self._build_keep_filenames(source_filenames, target_history)
         self._cleanup_old_files(keep_filenames)
         kept_files = [
             self._raw_dir / filename
@@ -369,8 +384,17 @@ class GoesDownloader:
             if file_path.name not in keep:
                 file_path.unlink(missing_ok=True)
 
+        kept_raws = sorted(
+            self._raw_dir.glob("*.tif"),
+            key=lambda path: _filename_timestamp_or_min(path.name),
+            reverse=True,
+        )
+        for file_path in kept_raws[self._raw_history :]:
+            file_path.unlink(missing_ok=True)
+
+        current_keep = {path.name for path in self._raw_dir.glob("*.tif")}
         for file_path in self._source_dir.glob("*.nc"):
-            if self._converter.output_filename(file_path.name) not in keep:
+            if self._converter.output_filename(file_path.name) not in current_keep:
                 file_path.unlink(missing_ok=True)
 
     def _emit_progress(self, **payload: object) -> None:
@@ -383,10 +407,16 @@ class GoesDownloader:
             return self._raw_history
         return min(self._raw_history, BOOTSTRAP_RAW_HISTORY)
 
-    def _candidate_history(self, target_history: int) -> int:
-        if target_history < self._raw_history:
-            return target_history
-        return target_history + DOWNLOAD_FAILURE_BUFFER
+    def _build_keep_filenames(self, source_filenames: list[str], target_history: int) -> list[str]:
+        keep_filenames: list[str] = []
+        for source_filename in source_filenames:
+            output_filename = self._converter.output_filename(source_filename)
+            if not (self._raw_dir / output_filename).exists():
+                continue
+            keep_filenames.append(output_filename)
+            if len(keep_filenames) >= target_history:
+                break
+        return keep_filenames
 
     def _cached_source_filenames_from_disk(self) -> list[str]:
         return sorted(
@@ -406,7 +436,7 @@ class GoesDownloader:
             hour = now - timedelta(hours=hour_offset)
             prefix = NODD_LISTING_PREFIX_TEMPLATE.format(
                 product=NODD_PRODUCT_PREFIX,
-                band=NODD_BAND_TOKEN,
+                band=self._band_token,
                 year=hour.strftime("%Y"),
                 julian_day=hour.strftime("%j"),
                 hour=hour.strftime("%H"),

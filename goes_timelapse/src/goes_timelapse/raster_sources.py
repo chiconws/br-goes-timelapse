@@ -103,7 +103,7 @@ class GeoTiffRasterSource:
             mask = dataset.read(2, window=window, boundless=True)
             subset = np.where(mask != 0, subset, np.nan)
 
-        grayscale = _normalize_to_uint8(subset)
+        grayscale = self._normalize_to_uint8(subset)
         return Image.fromarray(grayscale, mode="L").convert("RGBA")
 
     def close(self) -> None:
@@ -215,7 +215,7 @@ class GeoTiffRasterSource:
             )
             subset = np.where(mask != 0, subset, np.nan)
 
-        grayscale = _normalize_to_uint8(subset)
+        grayscale = self._normalize_to_uint8(subset)
         return Image.fromarray(grayscale, mode="L").convert("RGBA")
 
     def _reproject_band(
@@ -241,6 +241,12 @@ class GeoTiffRasterSource:
             resampling=resampling,
         )
         return destination
+
+    def _normalize_to_uint8(self, subset: np.ndarray) -> np.ndarray:
+        source_name = (self._dataset.name or "").upper()
+        if "C13" in source_name:
+            return _normalize_infrared_cmi_to_uint8(subset)
+        return _normalize_to_uint8(subset)
 
 
 class GoesNetcdfRasterSource:
@@ -388,5 +394,28 @@ def _normalize_visible_cmi_to_uint8(subset: np.ndarray) -> np.ndarray:
     # Keep more mid-tones and avoid the harsh black/white look from aggressive stretching.
     normalized = np.power(normalized, 0.92, dtype=np.float32)
     normalized = 0.06 + (normalized * 0.88)
+    normalized[~finite_mask] = 0.0
+    return np.round(np.clip(normalized, 0.0, 1.0) * 255).astype(np.uint8)
+
+
+def _normalize_infrared_cmi_to_uint8(subset: np.ndarray) -> np.ndarray:
+    finite_mask = np.isfinite(subset)
+    if not finite_mask.any():
+        return np.zeros(subset.shape, dtype=np.uint8)
+
+    values = subset[finite_mask].astype(np.float32)
+    low = float(np.percentile(values, 1.0))
+    high = float(np.percentile(values, 99.0))
+    if high <= low:
+        low = float(np.nanmin(values))
+        high = float(np.nanmax(values))
+    if high <= low:
+        high = low + 1.0
+
+    normalized = np.zeros(subset.shape, dtype=np.float32)
+    normalized[finite_mask] = np.clip((subset[finite_mask] - low) / (high - low), 0.0, 1.0)
+    normalized = 1.0 - normalized
+    normalized = np.power(normalized, 0.85, dtype=np.float32)
+    normalized = 0.04 + (normalized * 0.92)
     normalized[~finite_mask] = 0.0
     return np.round(np.clip(normalized, 0.0, 1.0) * 255).astype(np.uint8)

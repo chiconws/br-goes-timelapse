@@ -6,6 +6,8 @@ from datetime import UTC, date, datetime, timedelta
 from astral import Observer
 from astral.sun import sun
 
+DEFAULT_TRANSITION_BLEND_WEIGHTS = (0.2, 0.4, 0.6, 0.8)
+
 
 @dataclass(slots=True, frozen=True)
 class SolarWindow:
@@ -63,3 +65,119 @@ def is_within_visible_window(
         sunrise=window.sunrise,
         sunset=window.sunset,
     )
+
+
+def sunset_transition_slots(
+    *,
+    longitude: float,
+    latitude: float,
+    day: date,
+    frame_count: int = len(DEFAULT_TRANSITION_BLEND_WEIGHTS),
+    slot_minutes: int = 10,
+) -> tuple[datetime, ...]:
+    window = visible_window_for_day(
+        longitude=longitude,
+        latitude=latitude,
+        day=day,
+        margin_hours=0,
+    )
+    sunset_slot = _floor_to_slot(window.sunset, slot_minutes)
+    return tuple(
+        sunset_slot - timedelta(minutes=slot_minutes * offset)
+        for offset in range(frame_count - 1, -1, -1)
+    )
+
+
+def sunrise_transition_slots(
+    *,
+    longitude: float,
+    latitude: float,
+    day: date,
+    frame_count: int = len(DEFAULT_TRANSITION_BLEND_WEIGHTS),
+    slot_minutes: int = 10,
+) -> tuple[datetime, ...]:
+    window = visible_window_for_day(
+        longitude=longitude,
+        latitude=latitude,
+        day=day,
+        margin_hours=0,
+    )
+    sunrise_slot = _floor_to_slot(window.sunrise, slot_minutes)
+    return tuple(
+        sunrise_slot + timedelta(minutes=slot_minutes * offset)
+        for offset in range(frame_count)
+    )
+
+
+def sunset_transition_alpha(
+    *,
+    longitude: float,
+    latitude: float,
+    moment_utc: datetime,
+    blend_weights: tuple[float, ...] = DEFAULT_TRANSITION_BLEND_WEIGHTS,
+    slot_minutes: int = 10,
+) -> float | None:
+    if moment_utc.tzinfo is None:
+        moment_utc = moment_utc.replace(tzinfo=UTC)
+    else:
+        moment_utc = moment_utc.astimezone(UTC)
+
+    return _transition_alpha(
+        slots=sunset_transition_slots(
+            longitude=longitude,
+            latitude=latitude,
+            day=moment_utc.date(),
+            frame_count=len(blend_weights),
+            slot_minutes=slot_minutes,
+        ),
+        blend_weights=blend_weights,
+        moment_utc=moment_utc,
+        slot_minutes=slot_minutes,
+    )
+
+
+def sunrise_transition_alpha(
+    *,
+    longitude: float,
+    latitude: float,
+    moment_utc: datetime,
+    blend_weights: tuple[float, ...] = DEFAULT_TRANSITION_BLEND_WEIGHTS,
+    slot_minutes: int = 10,
+) -> float | None:
+    if moment_utc.tzinfo is None:
+        moment_utc = moment_utc.replace(tzinfo=UTC)
+    else:
+        moment_utc = moment_utc.astimezone(UTC)
+
+    return _transition_alpha(
+        slots=sunrise_transition_slots(
+            longitude=longitude,
+            latitude=latitude,
+            day=moment_utc.date(),
+            frame_count=len(blend_weights),
+            slot_minutes=slot_minutes,
+        ),
+        blend_weights=blend_weights,
+        moment_utc=moment_utc,
+        slot_minutes=slot_minutes,
+    )
+
+
+def _transition_alpha(
+    *,
+    slots: tuple[datetime, ...],
+    blend_weights: tuple[float, ...],
+    moment_utc: datetime,
+    slot_minutes: int,
+) -> float | None:
+    moment_slot = _floor_to_slot(moment_utc, slot_minutes)
+    try:
+        index = slots.index(moment_slot)
+    except ValueError:
+        return None
+    return blend_weights[index]
+
+
+def _floor_to_slot(moment_utc: datetime, slot_minutes: int) -> datetime:
+    floored_minute = moment_utc.minute - (moment_utc.minute % slot_minutes)
+    return moment_utc.replace(minute=floored_minute, second=0, microsecond=0)

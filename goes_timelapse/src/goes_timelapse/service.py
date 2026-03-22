@@ -4,7 +4,7 @@ import asyncio
 import logging
 import shutil
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from rasterio.windows import Window
@@ -17,20 +17,30 @@ from goes_timelapse.models import AreaCatalogEntry, RenderedArea, TrackedArea
 from goes_timelapse.raster_sources import open_raster_source
 from goes_timelapse.rendering import (
     AreaRenderer,
+    FrameSpec,
     WebpBuilder,
     parse_goes_timestamp,
     write_lovelace_snippet,
 )
-from goes_timelapse.solar import is_within_visible_window
+from goes_timelapse.solar import (
+    DEFAULT_TRANSITION_BLEND_WEIGHTS,
+    is_within_visible_window,
+    sunrise_transition_alpha,
+    sunset_transition_alpha,
+)
 from goes_timelapse.state import StateStore
 
 
 LOGGER = logging.getLogger(__name__)
 
 RAW_SOURCE_VISIBLE = "visible"
+RAW_SOURCE_INFRARED = "infrared"
 RAW_SOURCE_LABELS = {
     RAW_SOURCE_VISIBLE: "Visível B2",
+    RAW_SOURCE_INFRARED: "Infravermelho B13",
 }
+TRANSITION_BLEND_WEIGHTS = DEFAULT_TRANSITION_BLEND_WEIGHTS
+SLOT_MINUTES = 10
 
 
 @dataclass(slots=True, frozen=True)
@@ -63,11 +73,22 @@ class GoesTimelapseService:
         self._downloaders = {
             RAW_SOURCE_VISIBLE: GoesDownloader(
                 base_url=settings.goes_url,
-                source_dir=settings.source_dir,
-                raw_dir=settings.raw_dir,
+                source_dir=settings.source_dir / RAW_SOURCE_VISIBLE,
+                raw_dir=settings.raw_dir / RAW_SOURCE_VISIBLE,
                 raw_history=settings.raw_history,
+                band="C02",
                 progress_callback=lambda payload: self._update_raw_download_status(
                     RAW_SOURCE_VISIBLE, payload
+                ),
+            ),
+            RAW_SOURCE_INFRARED: GoesDownloader(
+                base_url=settings.goes_url,
+                source_dir=settings.source_dir / RAW_SOURCE_INFRARED,
+                raw_dir=settings.raw_dir / RAW_SOURCE_INFRARED,
+                raw_history=settings.raw_history,
+                band="C13",
+                progress_callback=lambda payload: self._update_raw_download_status(
+                    RAW_SOURCE_INFRARED, payload
                 ),
             ),
         }
@@ -197,7 +218,7 @@ class GoesTimelapseService:
 
     def downloads_snapshot(self) -> dict[str, object]:
         sources = []
-        for source_key in (RAW_SOURCE_VISIBLE,):
+        for source_key in (RAW_SOURCE_VISIBLE, RAW_SOURCE_INFRARED):
             status = self._download_status[source_key]
             files = self._raw_files_for_source(source_key)
             sources.append(
@@ -276,8 +297,15 @@ class GoesTimelapseService:
                             f"{RAW_SOURCE_LABELS[plan.source_key]}: {report.failed_count} arquivo(s) falharam"
                         )
 
-                    if report.kept_files and report.downloaded_count > 0:
+                    latest_kept_timestamp = self._latest_kept_timestamp(report.kept_files)
+                    if report.kept_files:
                         for area_id in plan.tracked_area_ids:
+                            if not self._area_needs_reprocessing(
+                                area_id,
+                                latest_kept_timestamp=latest_kept_timestamp,
+                                downloaded_count=report.downloaded_count,
+                            ):
+                                continue
                             self.state_store.set_status(area_id, "queued", last_error=None)
                             await self.enqueue(area_id)
             finally:
@@ -324,19 +352,15 @@ class GoesTimelapseService:
             self.state_store.set_status(area_id, "error", last_error="Área não encontrada")
             return None
 
-        raw_paths = sorted(
-            self._raw_files_in_dir(self._raw_dir_for_area(area)),
-            key=lambda path: parse_goes_timestamp(path.name),
-        )[-self.settings.frame_count :]
-        raw_paths = [path for path in raw_paths if self._is_valid_raw(path)]
-        if not raw_paths:
+        frame_specs = self._build_frame_specs(area)
+        if not frame_specs:
             self.state_store.set_status(area_id, "queued", last_error=None)
             return None
 
         self.state_store.set_status(area_id, "processing", last_error=None)
         try:
             geometry = self.geometry_store.load_geometry(area)
-            png_paths = self.renderer.process_frames(area, geometry, raw_paths)
+            png_paths = self.renderer.process_frames(area, geometry, frame_specs)
             if not png_paths:
                 self.state_store.set_status(
                     area_id, "error", last_error="Nenhum quadro foi renderizado"
@@ -349,7 +373,7 @@ class GoesTimelapseService:
                 area,
                 area_id,
             )
-            latest_source_timestamp = parse_goes_timestamp(raw_paths[-1].name)
+            latest_source_timestamp = frame_specs[-1].timestamp
 
             if not self.state_store.is_tracked(area_id):
                 self._cleanup_area_files(area_id)
@@ -474,7 +498,6 @@ class GoesTimelapseService:
         status["attempted_count"] = 0
         status["completed_count"] = 0
         status["failed_count"] = 0
-        status["latest_available"] = None
 
     async def _build_download_plans(self) -> list[DownloadSourcePlan]:
         tracked = self.state_store.list_tracked()
@@ -488,13 +511,21 @@ class GoesTimelapseService:
                 should_download=False,
                 reason="Nenhum município acompanhado",
             ),
+            DownloadSourcePlan(
+                source_key=RAW_SOURCE_INFRARED,
+                source_label=RAW_SOURCE_LABELS[RAW_SOURCE_INFRARED],
+                tracked_area_ids=visible_ids,
+                should_download=False,
+                reason="Nenhum município acompanhado",
+            ),
         ]
 
         if not visible_ids:
             return plans
 
         now_utc = datetime.now(UTC)
-        visible_open = False
+        visible_active = False
+        infrared_active = False
         for area_id in visible_ids:
             area = self.catalog.get(area_id)
             if area is None:
@@ -506,22 +537,37 @@ class GoesTimelapseService:
                 moment_utc=now_utc,
                 margin_hours=self.settings.solar_margin_hours,
             )
-            if solar_window.is_open:
-                visible_open = True
-                break
+            sunrise_alpha = self._sunrise_transition_alpha(area, now_utc)
+            sunset_alpha = self._sunset_transition_alpha(area, now_utc)
+
+            if solar_window.is_open or sunrise_alpha is not None or sunset_alpha is not None:
+                visible_active = True
+            else:
+                infrared_active = True
+
+            if sunrise_alpha is not None or sunset_alpha is not None:
+                infrared_active = True
 
         plans[0] = DownloadSourcePlan(
             source_key=RAW_SOURCE_VISIBLE,
             source_label=RAW_SOURCE_LABELS[RAW_SOURCE_VISIBLE],
             tracked_area_ids=visible_ids,
-            should_download=visible_open,
+            should_download=visible_active,
             reason=(
-                "Ativo na janela solar dos municípios"
-                if visible_open
-                else (
-                    "Pausado fora da janela solar dos municípios "
-                    f"(margem de {self.settings.solar_margin_hours}h)"
-                )
+                "Ativo entre o nascer e o pôr do sol dos municípios"
+                if visible_active
+                else "Pausado fora da janela solar dos municípios"
+            ),
+        )
+        plans[1] = DownloadSourcePlan(
+            source_key=RAW_SOURCE_INFRARED,
+            source_label=RAW_SOURCE_LABELS[RAW_SOURCE_INFRARED],
+            tracked_area_ids=visible_ids,
+            should_download=infrared_active,
+            reason=(
+                "Ativo durante a noite ou na transição do amanhecer/entardecer"
+                if infrared_active
+                else "Aguardando noite ou transição do amanhecer/entardecer"
             ),
         )
         return plans
@@ -533,6 +579,155 @@ class GoesTimelapseService:
         geometry = self.geometry_store.load_geometry(area)
         self._centroid_cache[area.area_id] = geometry.centroid
         return geometry.centroid
+
+    def _build_frame_specs(self, area: AreaCatalogEntry) -> list[FrameSpec]:
+        source_paths = {
+            source_key: {
+                parse_goes_timestamp(path.name): path
+                for path in self._raw_files_in_dir(self._raw_dir_for_source(source_key))
+                if self._is_valid_raw(path)
+            }
+            for source_key in self._downloaders
+        }
+        timestamps = sorted(
+            {
+                *source_paths[RAW_SOURCE_VISIBLE].keys(),
+                *source_paths[RAW_SOURCE_INFRARED].keys(),
+            },
+            reverse=True,
+        )
+        frame_specs_desc: list[FrameSpec] = []
+        for timestamp in timestamps:
+            moment_utc = _goes_timestamp_to_datetime(timestamp)
+            if moment_utc is None:
+                continue
+            visible_path = source_paths[RAW_SOURCE_VISIBLE].get(timestamp)
+            infrared_path = source_paths[RAW_SOURCE_INFRARED].get(timestamp)
+            sunrise_alpha = self._sunrise_transition_alpha(area, moment_utc)
+            sunset_alpha = self._sunset_transition_alpha(area, moment_utc)
+            if (
+                sunrise_alpha is not None
+                and visible_path is not None
+                and infrared_path is not None
+            ):
+                frame_specs_desc.append(
+                    FrameSpec(
+                        timestamp=timestamp,
+                        primary_path=infrared_path,
+                        blend_path=visible_path,
+                        blend_alpha=sunrise_alpha,
+                    )
+                )
+                if len(frame_specs_desc) >= self.settings.frame_count:
+                    break
+                continue
+
+            if (
+                sunset_alpha is not None
+                and visible_path is not None
+                and infrared_path is not None
+            ):
+                frame_specs_desc.append(
+                    FrameSpec(
+                        timestamp=timestamp,
+                        primary_path=visible_path,
+                        blend_path=infrared_path,
+                        blend_alpha=sunset_alpha,
+                    )
+                )
+                if len(frame_specs_desc) >= self.settings.frame_count:
+                    break
+                continue
+
+            prefers_visible = self._prefers_visible(area, moment_utc)
+            primary_path = (
+                visible_path
+                if prefers_visible and visible_path is not None
+                else infrared_path
+                if not prefers_visible and infrared_path is not None
+                else visible_path or infrared_path
+            )
+            if primary_path is None:
+                continue
+            frame_specs_desc.append(
+                FrameSpec(
+                    timestamp=timestamp,
+                    primary_path=primary_path,
+                )
+            )
+            if len(frame_specs_desc) >= self.settings.frame_count:
+                break
+        return list(reversed(frame_specs_desc))
+
+    def _area_needs_reprocessing(
+        self,
+        area_id: str,
+        *,
+        latest_kept_timestamp: str | None,
+        downloaded_count: int,
+    ) -> bool:
+        if downloaded_count > 0:
+            return True
+
+        tracked = self.state_store.get_tracked(area_id)
+        if tracked is None:
+            return False
+
+        if tracked.status in {"queued", "processing", "error"}:
+            return True
+
+        if latest_kept_timestamp is None:
+            return False
+
+        if tracked.latest_source_timestamp is None:
+            return True
+
+        return tracked.latest_source_timestamp < latest_kept_timestamp
+
+    @staticmethod
+    def _latest_kept_timestamp(paths: list[Path]) -> str | None:
+        timestamps = [parse_goes_timestamp(path.name) for path in paths]
+        usable = [timestamp for timestamp in timestamps if _goes_timestamp_to_datetime(timestamp) is not None]
+        if not usable:
+            return None
+        return max(usable)
+
+    def _prefers_visible(self, area: AreaCatalogEntry, moment_utc: datetime) -> bool:
+        centroid = self._resolve_area_centroid(area)
+        return is_within_visible_window(
+            longitude=centroid[0],
+            latitude=centroid[1],
+            moment_utc=moment_utc,
+            margin_hours=self.settings.solar_margin_hours,
+        ).is_open
+
+    def _sunset_transition_alpha(
+        self,
+        area: AreaCatalogEntry,
+        moment_utc: datetime,
+    ) -> float | None:
+        centroid = self._resolve_area_centroid(area)
+        return sunset_transition_alpha(
+            longitude=centroid[0],
+            latitude=centroid[1],
+            moment_utc=moment_utc,
+            blend_weights=TRANSITION_BLEND_WEIGHTS,
+            slot_minutes=SLOT_MINUTES,
+        )
+
+    def _sunrise_transition_alpha(
+        self,
+        area: AreaCatalogEntry,
+        moment_utc: datetime,
+    ) -> float | None:
+        centroid = self._resolve_area_centroid(area)
+        return sunrise_transition_alpha(
+            longitude=centroid[0],
+            latitude=centroid[1],
+            moment_utc=moment_utc,
+            blend_weights=TRANSITION_BLEND_WEIGHTS,
+            slot_minutes=SLOT_MINUTES,
+        )
 
     def _source_download_summary(self, source_key: str, raw_frame_count: int) -> str:
         status = self._download_status[source_key]
@@ -550,8 +745,6 @@ class GoesTimelapseService:
             return reason or "Fonte pausada"
         if phase == "downloading":
             detail = f"{completed}/{attempted}" if attempted else "iniciando"
-            if current_file:
-                return f"Baixando ({detail}, {active} ativos): {current_file}"
             return f"Baixando ({detail}, {active} ativos)"
         if phase == "partial":
             if reason:
@@ -582,8 +775,13 @@ class GoesTimelapseService:
         }
 
     def _all_raw_files(self) -> list[dict[str, object]]:
-        all_files = self._raw_files_for_source(RAW_SOURCE_VISIBLE)
-        all_files.sort(key=lambda item: str(item["filename"]), reverse=True)
+        all_files: list[dict[str, object]] = []
+        for source_key in self._downloaders:
+            all_files.extend(self._raw_files_for_source(source_key))
+        all_files.sort(
+            key=lambda item: parse_goes_timestamp(str(item["filename"])),
+            reverse=True,
+        )
         return all_files
 
     def _raw_disk_usage_bytes(self) -> int:
@@ -613,7 +811,7 @@ class GoesTimelapseService:
         return self.settings.raw_dir
 
     def _raw_dir_for_source(self, source_key: str) -> Path:
-        return self.settings.raw_dir
+        return self.settings.raw_dir / source_key
 
     @staticmethod
     def _raw_files_in_dir(raw_dir: Path) -> list[Path]:
@@ -646,3 +844,18 @@ def _download_phase_label(phase: str) -> str:
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _goes_timestamp_to_datetime(timestamp: str) -> datetime | None:
+    if len(timestamp) < 11:
+        return None
+    try:
+        year = int(timestamp[0:4])
+        day_of_year = int(timestamp[4:7])
+        hour = int(timestamp[7:9])
+        minute = int(timestamp[9:11])
+    except ValueError:
+        return None
+
+    moment = datetime(year, 1, 1, hour=hour, minute=minute, tzinfo=UTC)
+    return moment.replace(tzinfo=UTC) + timedelta(days=day_of_year - 1)

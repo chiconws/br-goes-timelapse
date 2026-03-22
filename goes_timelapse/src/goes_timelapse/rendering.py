@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import logging
 from dataclasses import dataclass
@@ -33,6 +35,14 @@ class RenderPlan:
     scaled_polygon: tuple[tuple[float, float], ...]
     scaled_state_lines: tuple[tuple[tuple[float, float], ...], ...]
     output_size: tuple[int, int]
+
+
+@dataclass(slots=True, frozen=True)
+class FrameSpec:
+    timestamp: str
+    primary_path: Path
+    blend_path: Path | None = None
+    blend_alpha: float = 0.0
 
 
 def parse_goes_timestamp(filename: str) -> str:
@@ -75,28 +85,25 @@ class AreaRenderer:
             self._state_boundary_lines = ()
 
     def process_frames(
-        self, area: AreaCatalogEntry, geometry: AreaGeometry, tif_paths: list[Path]
+        self, area: AreaCatalogEntry, geometry: AreaGeometry, frame_inputs: list[Path | FrameSpec]
     ) -> list[Path]:
-        selected_paths = sorted(tif_paths, key=lambda path: parse_goes_timestamp(path.name))[
-            -self._settings.frame_count :
-        ]
-        if not selected_paths:
+        frame_specs = self._coerce_frame_specs(frame_inputs)[-self._settings.frame_count :]
+        if not frame_specs:
             return []
 
         output_dir = self._settings.processed_dir / area.area_id
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        with _open_source(selected_paths[0]) as src:
+        with _open_source(frame_specs[0].primary_path) as src:
             plan = self._build_render_plan(geometry, src)
 
         rendered_paths: list[Path] = []
         keep_filenames = set()
-        for tif_path in selected_paths:
-            timestamp = parse_goes_timestamp(tif_path.name)
-            png_path = output_dir / f"{timestamp}.png"
+        for frame_spec in frame_specs:
+            png_path = output_dir / self._frame_output_name(frame_spec, plan)
             keep_filenames.add(png_path.name)
             if not png_path.exists():
-                self._render_frame(tif_path, png_path, area, plan)
+                self._render_frame(frame_spec, png_path, area, plan)
             rendered_paths.append(png_path)
 
         for stale_path in output_dir.glob("*.png"):
@@ -104,6 +111,23 @@ class AreaRenderer:
                 stale_path.unlink(missing_ok=True)
 
         return rendered_paths
+
+    def _frame_output_name(self, frame_spec: FrameSpec, plan: RenderPlan) -> str:
+        return f"{frame_spec.timestamp}-{self._frame_cache_key(frame_spec, plan)}.png"
+
+    def _frame_cache_key(self, frame_spec: FrameSpec, plan: RenderPlan) -> str:
+        payload = {
+            "timestamp": frame_spec.timestamp,
+            "primary": frame_spec.primary_path.name,
+            "blend": frame_spec.blend_path.name if frame_spec.blend_path is not None else None,
+            "blend_alpha": round(frame_spec.blend_alpha, 4),
+            "dst_bounds": [round(value, 6) for value in plan.dst_bounds],
+            "output_size": list(plan.output_size),
+        }
+        digest = hashlib.sha1(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return digest[:12]
 
     def cleanup(self, area_id: str) -> None:
         output_dir = self._settings.processed_dir / area_id
@@ -199,12 +223,48 @@ class AreaRenderer:
 
     def _render_frame(
         self,
-        tif_path: Path,
+        frame_spec: FrameSpec,
         png_path: Path,
         area: AreaCatalogEntry,
         plan: RenderPlan,
     ) -> None:
-        with _open_source(tif_path) as src:
+        image = self._load_frame_image(frame_spec.primary_path, area.area_id, plan)
+        blend_image: Image.Image | None = None
+        if frame_spec.blend_path is not None:
+            blend_image = self._load_frame_image(frame_spec.blend_path, area.area_id, plan)
+            image = Image.blend(image, blend_image, frame_spec.blend_alpha)
+            blend_image.close()
+
+        draw = ImageDraw.Draw(image, "RGBA")
+        for state_line in plan.scaled_state_lines:
+            if len(state_line) >= 2:
+                draw.line(state_line, fill=(255, 255, 255, 192), width=1)
+
+        polygon_points = [
+            (round(point[0], 1), round(point[1], 1)) for point in plan.scaled_polygon
+        ]
+        if polygon_points:
+            draw.line(polygon_points + [polygon_points[0]], fill=(255, 214, 10, 255), width=2)
+
+        self._draw_overlay(
+            draw,
+            image.size,
+            area.display_name,
+            format_capture_time(frame_spec.primary_path.name),
+        )
+
+        temporary_path = png_path.with_suffix(".png.tmp")
+        image.convert("RGB").save(temporary_path, format="PNG")
+        temporary_path.replace(png_path)
+        image.close()
+
+    def _load_frame_image(
+        self,
+        raw_path: Path,
+        area_id: str,
+        plan: RenderPlan,
+    ) -> Image.Image:
+        with _open_source(raw_path) as src:
             image = src.read_image(
                 plan.window,
                 output_size=plan.output_size,
@@ -213,8 +273,8 @@ class AreaRenderer:
         if image.size[0] <= 0 or image.size[1] <= 0:
             LOGGER.warning(
                 "Raw frame %s produced an empty crop for %s; using a blank fallback frame",
-                tif_path.name,
-                area.area_id,
+                raw_path.name,
+                area_id,
             )
             image = Image.new("RGBA", plan.output_size, (0, 0, 0, 255))
         if image.size != plan.output_size:
@@ -241,28 +301,7 @@ class AreaRenderer:
                 image = image.filter(
                     ImageFilter.UnsharpMask(radius=1.0, percent=110, threshold=2)
                 )
-
-        draw = ImageDraw.Draw(image, "RGBA")
-        for state_line in plan.scaled_state_lines:
-            if len(state_line) >= 2:
-                draw.line(state_line, fill=(255, 255, 255, 192), width=1)
-
-        polygon_points = [
-            (round(point[0], 1), round(point[1], 1)) for point in plan.scaled_polygon
-        ]
-        if polygon_points:
-            draw.line(polygon_points + [polygon_points[0]], fill=(255, 214, 10, 255), width=2)
-
-        self._draw_overlay(
-            draw,
-            image.size,
-            area.display_name,
-            format_capture_time(tif_path.name),
-        )
-
-        temporary_path = png_path.with_suffix(".png.tmp")
-        image.convert("RGB").save(temporary_path, format="PNG")
-        temporary_path.replace(png_path)
+        return image
 
     def _draw_overlay(
         self,
@@ -460,6 +499,22 @@ class AreaRenderer:
             y = ((top - lat) / height) * output_height
             scaled.append((x, y))
         return scaled
+
+    @staticmethod
+    def _coerce_frame_specs(frame_inputs: list[Path | FrameSpec]) -> list[FrameSpec]:
+        frame_specs: list[FrameSpec] = []
+        for item in frame_inputs:
+            if isinstance(item, FrameSpec):
+                frame_specs.append(item)
+            else:
+                frame_specs.append(
+                    FrameSpec(
+                        timestamp=parse_goes_timestamp(item.name),
+                        primary_path=item,
+                    )
+                )
+        frame_specs.sort(key=lambda item: item.timestamp)
+        return frame_specs
 
 
 class WebpBuilder:

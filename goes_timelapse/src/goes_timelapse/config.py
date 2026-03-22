@@ -85,7 +85,7 @@ class Settings:
             goes_url=os.getenv(
                 "GOES_URL", "https://noaa-goes19.s3.amazonaws.com/"
             ),
-            poll_minutes=_env_int("GOES_POLL_MINUTES", 5),
+            poll_minutes=_env_int("GOES_POLL_MINUTES", 2),
             frame_count=_env_int("GOES_FRAME_COUNT", 10),
             gif_fps=_env_int("GOES_GIF_FPS", 2),
             raw_history=_env_int("GOES_RAW_HISTORY", 12),

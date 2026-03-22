@@ -14,12 +14,14 @@ class Geo2GridConverter:
         self,
         *,
         command: str = "geo2grid.sh",
+        product: str = "C02",
         ll_bbox: tuple[float, float, float, float] = BRAZIL_LONLAT_BBOX,
         grid: str = "wgs84_fit",
         method: str = "nearest",
         num_workers: int = 1,
     ) -> None:
         self._command = command
+        self._product = product
         self._ll_bbox = ll_bbox
         self._grid = grid
         self._method = method
@@ -48,7 +50,7 @@ class Geo2GridConverter:
                 "-w",
                 "geotiff",
                 "-p",
-                "C02",
+                self._product,
                 "-g",
                 self._grid,
                 "--method",
