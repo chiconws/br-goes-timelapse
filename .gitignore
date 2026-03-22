@@ -22,8 +22,8 @@ __pycache__/
 /site/
 /shapefiles/
 /devtools/
-/.devcontainer/
 /.vscode/
+/.tmp/
 /goes_timelapse/.mypy_cache/
 /goes_timelapse/.pytest_cache/
 /data/
