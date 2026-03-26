@@ -1,5 +1,12 @@
 # Histórico de mudanças
 
+## 1.0.3
+
+- Adiciona a pipeline dia/noite com Banda 2 de dia, Banda 13 à noite e transições no amanhecer e no entardecer.
+- Reduz o polling padrão para `2 min` e evita checagens remotas em fontes pausadas.
+- Reaproveita os PNGs intermediários quando o frame não mudou, reduzindo o custo de render do WebP.
+- Melhora a UI de downloads com atualização mais rápida durante transferências e exibição mais legível de data/hora dos arquivos.
+
 ## 1.0.2
 
 - Ajusta a janela solar padrão para usar `0h` de margem, limitando os downloads da Banda 2 ao período entre nascer e pôr do sol.
