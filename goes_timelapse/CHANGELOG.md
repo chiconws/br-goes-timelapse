@@ -1,5 +1,12 @@
 # Histórico de mudanças
 
+## 1.0.5
+
+- Adiciona `scratch_dir` para separar temporários intensivos em RAM do cache persistente em disco.
+- Torna o pipeline bruto concorrente, com download e conversão desacoplados e feedback explícito de `Convertendo`.
+- Muda a retenção de raws para uma timeline útil global, evitando manter `12 + 12` arquivos por banda quando eles já não entram mais no GIF.
+- Melhora o painel de status para destacar `Timestamps úteis` e o cap real de retenção.
+
 ## 1.0.4
 
 - Adiciona a opção `data_dir` na configuração do add-on para mover o cache e os temporários para outro diretório.
