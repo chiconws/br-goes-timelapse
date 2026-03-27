@@ -2,6 +2,10 @@
 set -euo pipefail
 
 export GOES_DATA_DIR="$(bashio::config 'data_dir')"
+scratch_dir="$(bashio::config 'scratch_dir')"
+if [[ -n "$scratch_dir" && "$scratch_dir" != "null" ]]; then
+  export GOES_SCRATCH_DIR="$scratch_dir"
+fi
 export GOES_POLL_MINUTES="$(bashio::config 'poll_minutes')"
 export GOES_FRAME_COUNT="$(bashio::config 'frame_count')"
 export GOES_GIF_FPS="$(bashio::config 'gif_fps')"

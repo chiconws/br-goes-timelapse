@@ -23,7 +23,8 @@ NODD_LISTING_PREFIX_TEMPLATE = (
 )
 BOOTSTRAP_RAW_HISTORY = 3
 DOWNLOAD_RETRY_ATTEMPTS = 5
-DOWNLOAD_CONCURRENCY = 1
+DOWNLOAD_CONCURRENCY = 2
+CONVERT_CONCURRENCY = 1
 LOOKBACK_HOURS = 4
 REQUEST_HEADERS = {
     "Accept-Encoding": "identity",
@@ -60,6 +61,7 @@ class GoesDownloader:
         raw_history: int,
         *,
         band: str = "C02",
+        scratch_dir: Path | None = None,
         converter: Geo2GridConverter | None = None,
         progress_callback: Callable[[dict[str, object]], None] | None = None,
     ):
@@ -74,7 +76,10 @@ class GoesDownloader:
             rf"OR_{re.escape(NODD_PRODUCT_PREFIX)}-{re.escape(self._band_token)}_G19_"
             rf"s(?P<timestamp>\d{{13,14}})_e\d{{13,14}}_c\d{{13,14}}\.nc)"
         )
-        self._converter = converter or Geo2GridConverter(product=band)
+        self._converter = converter or Geo2GridConverter(
+            product=band,
+            scratch_dir=scratch_dir,
+        )
         self._progress_callback = progress_callback
         self._source_dir.mkdir(parents=True, exist_ok=True)
         self._raw_dir.mkdir(parents=True, exist_ok=True)
@@ -135,13 +140,7 @@ class GoesDownloader:
                 last_downloaded=None,
             )
             if not download_missing:
-                keep_filenames = self._build_keep_filenames(source_filenames, target_history)
-                self._cleanup_old_files(keep_filenames)
-                kept_files = [
-                    self._raw_dir / filename
-                    for filename in keep_filenames
-                    if (self._raw_dir / filename).exists()
-                ]
+                kept_files = self._kept_raws_on_disk()
                 return DownloadReport(
                     kept_files=kept_files,
                     downloaded_count=0,
@@ -152,45 +151,87 @@ class GoesDownloader:
                     failed_files=[],
                 )
 
-            semaphore = asyncio.Semaphore(DOWNLOAD_CONCURRENCY)
+            download_semaphore = asyncio.Semaphore(DOWNLOAD_CONCURRENCY)
+            convert_semaphore = asyncio.Semaphore(CONVERT_CONCURRENCY)
 
             completed_count = 0
             failed_files: list[str] = []
             last_downloaded: str | None = None
-            active_count = 0
             active_downloads: dict[str, dict[str, object]] = {}
             progress_lock = asyncio.Lock()
 
-            async def update_progress(
+            def current_phase() -> str:
+                if any(
+                    str(item.get("stage")) == "downloading"
+                    for item in active_downloads.values()
+                ):
+                    return "downloading"
+                if active_downloads:
+                    return "processing"
+                if completed_count < len(candidate_outputs):
+                    return "downloading"
+                return "idle"
+
+            async def upsert_active_download(
                 *,
-                current_file: str | None = None,
-                completed_delta: int = 0,
-                active_delta: int = 0,
-                last_downloaded_name: str | None = None,
+                filename: str,
+                stage: str,
+                downloaded_bytes: int | None = None,
+                total_bytes: int | None = None,
+                percent: float | None = None,
             ) -> None:
-                nonlocal completed_count, active_count, last_downloaded
                 async with progress_lock:
-                    completed_count += completed_delta
-                    active_count = max(0, active_count + active_delta)
-                    if current_file and active_delta > 0 and current_file not in active_downloads:
-                        active_downloads[current_file] = {
-                            "filename": current_file,
+                    item = active_downloads.get(filename)
+                    if item is None:
+                        item = {
+                            "filename": filename,
                             "downloaded_bytes": 0,
                             "total_bytes": None,
                             "percent": None,
+                            "stage": stage,
                         }
-                    if current_file and active_delta < 0:
-                        active_downloads.pop(current_file, None)
-                    if last_downloaded_name:
-                        last_downloaded = last_downloaded_name
+                        active_downloads[filename] = item
+                    else:
+                        item["stage"] = stage
+                    if downloaded_bytes is not None:
+                        item["downloaded_bytes"] = downloaded_bytes
+                    if total_bytes is not None or stage == "downloading":
+                        item["total_bytes"] = total_bytes
+                    if percent is not None:
+                        item["percent"] = percent
                     self._emit_progress(
-                        phase="downloading" if active_count or completed_count < len(candidate_outputs) else "idle",
+                        phase=current_phase(),
                         attempted_count=len(candidate_outputs),
                         completed_count=completed_count,
                         failed_count=len(failed_files),
-                        active_count=active_count,
+                        active_count=len(active_downloads),
                         latest_available=candidate_outputs[0] if candidate_outputs else None,
-                        current_file=current_file,
+                        current_file=filename,
+                        last_downloaded=last_downloaded,
+                        active_downloads=sorted(
+                            active_downloads.values(), key=lambda item: str(item["filename"])
+                        ),
+                    )
+
+            async def complete_active_download(
+                *,
+                filename: str,
+                last_downloaded_name: str | None = None,
+            ) -> None:
+                nonlocal completed_count, last_downloaded
+                async with progress_lock:
+                    completed_count += 1
+                    active_downloads.pop(filename, None)
+                    if last_downloaded_name:
+                        last_downloaded = last_downloaded_name
+                    self._emit_progress(
+                        phase=current_phase(),
+                        attempted_count=len(candidate_outputs),
+                        completed_count=completed_count,
+                        failed_count=len(failed_files),
+                        active_count=len(active_downloads),
+                        latest_available=candidate_outputs[0] if candidate_outputs else None,
+                        current_file=filename,
                         last_downloaded=last_downloaded,
                         active_downloads=sorted(
                             active_downloads.values(), key=lambda item: str(item["filename"])
@@ -202,69 +243,56 @@ class GoesDownloader:
                 downloaded_bytes: int,
                 total_bytes: int | None,
             ) -> None:
-                async with progress_lock:
-                    active_download = active_downloads.get(filename)
-                    if active_download is None:
-                        return
-                    active_download["downloaded_bytes"] = downloaded_bytes
-                    active_download["total_bytes"] = total_bytes
-                    active_download["percent"] = (
-                        round((downloaded_bytes / total_bytes) * 100, 1)
-                        if total_bytes
-                        else None
-                    )
-                    self._emit_progress(
-                        phase="downloading",
-                        attempted_count=len(candidate_outputs),
-                        completed_count=completed_count,
-                        failed_count=len(failed_files),
-                        active_count=active_count,
-                        latest_available=candidate_outputs[0] if candidate_outputs else None,
-                        current_file=filename,
-                        last_downloaded=last_downloaded,
-                        active_downloads=sorted(
-                            active_downloads.values(), key=lambda item: str(item["filename"])
-                        ),
-                    )
+                percent = (
+                    round((downloaded_bytes / total_bytes) * 100, 1)
+                    if total_bytes
+                    else None
+                )
+                await upsert_active_download(
+                    filename=filename,
+                    stage="downloading",
+                    downloaded_bytes=downloaded_bytes,
+                    total_bytes=total_bytes,
+                    percent=percent,
+                )
 
             async def download(source_filename: str) -> int:
                 output_filename = self._converter.output_filename(source_filename)
-                async with semaphore:
-                    await update_progress(current_file=output_filename, active_delta=1)
-                    try:
-                        downloaded = await self._download_if_missing(
+                await upsert_active_download(filename=output_filename, stage="downloading")
+                try:
+                    async with download_semaphore:
+                        source_path = await self._download_source_if_needed(
                             session,
                             source_filename,
                             progress_hook=update_download_bytes,
                         )
-                    except Exception as err:
-                        failed_files.append(output_filename)
-                        active_downloads.pop(output_filename, None)
-                        LOGGER.warning("Failed to download %s: %s", source_filename, err)
-                        await update_progress(
-                            completed_delta=1,
-                            active_delta=-1,
-                            current_file=output_filename,
-                        )
+                    if source_path is None:
+                        await complete_active_download(filename=output_filename)
                         return 0
 
-                    await update_progress(
-                        completed_delta=1,
-                        active_delta=-1,
-                        current_file=output_filename,
-                        last_downloaded_name=output_filename if downloaded else None,
+                    await upsert_active_download(
+                        filename=output_filename,
+                        stage="converting",
                     )
-                    return downloaded
+                    async with convert_semaphore:
+                        converted = await self._convert_source_to_tiff(
+                            source_filename,
+                            source_path,
+                        )
+                    await complete_active_download(
+                        filename=output_filename,
+                        last_downloaded_name=output_filename if converted else None,
+                    )
+                    return converted
+                except Exception as err:
+                    failed_files.append(output_filename)
+                    LOGGER.warning("Failed to download %s: %s", source_filename, err)
+                    await complete_active_download(filename=output_filename)
+                    return 0
 
             results = await asyncio.gather(*(download(name) for name in candidate_sources))
 
-        keep_filenames = self._build_keep_filenames(source_filenames, target_history)
-        self._cleanup_old_files(keep_filenames)
-        kept_files = [
-            self._raw_dir / filename
-            for filename in keep_filenames
-            if (self._raw_dir / filename).exists()
-        ]
+        kept_files = self._kept_raws_on_disk()
         return DownloadReport(
             kept_files=kept_files,
             downloaded_count=sum(results),
@@ -277,6 +305,7 @@ class GoesDownloader:
 
     async def _fetch_listing(self, session: aiohttp.ClientSession) -> list[str]:
         collected: set[str] = set()
+        last_error: Exception | None = None
         for prefix in self._listing_prefixes():
             encoded_prefix = quote(prefix, safe="/")
             url = f"{self._base_url}?prefix={encoded_prefix}&max-keys=1000"
@@ -288,8 +317,14 @@ class GoesDownloader:
                     collected.update(self.parse_listing(payload))
                     break
                 except DOWNLOAD_RETRYABLE_ERRORS as err:
+                    last_error = err
                     if attempt >= DOWNLOAD_RETRY_ATTEMPTS:
-                        raise
+                        LOGGER.warning(
+                            "Skipping listing prefix after repeated failures %s: %s",
+                            url,
+                            err,
+                        )
+                        break
                     LOGGER.warning(
                         "Transient failure fetching listing from %s (attempt %s/%s): %s",
                         url,
@@ -299,29 +334,35 @@ class GoesDownloader:
                     )
                     await asyncio.sleep(attempt)
 
+        if collected:
+            return sorted(collected, key=_filename_timestamp_or_min, reverse=True)
+        if last_error is not None:
+            raise last_error
         return sorted(collected, key=_filename_timestamp_or_min, reverse=True)
 
-    async def _download_if_missing(
+    async def _download_source_if_needed(
         self,
         session: aiohttp.ClientSession,
         filename: str,
         *,
         progress_hook: Callable[[str, int, int | None], asyncio.Future | None] | None = None,
-    ) -> int:
+    ) -> Path | None:
         output_filename = self._converter.output_filename(filename)
         destination = self._raw_dir / output_filename
         if destination.exists() and self._is_expected_brazil_tiff(destination):
-            return 0
+            return None
         if destination.exists():
             destination.unlink(missing_ok=True)
 
         source_path = self._source_dir / filename
+        if source_path.exists():
+            return source_path
+
         temporary_path = source_path.with_suffix(source_path.suffix + ".part")
         source_key = self._source_key_for_filename(filename)
         for attempt in range(1, DOWNLOAD_RETRY_ATTEMPTS + 1):
             temporary_path.unlink(missing_ok=True)
             source_path.unlink(missing_ok=True)
-            destination.unlink(missing_ok=True)
             try:
                 async with session.get(f"{self._base_url}{source_key}") as response:
                     response.raise_for_status()
@@ -335,14 +376,10 @@ class GoesDownloader:
                                 await progress_hook(output_filename, downloaded_bytes, total_bytes)
 
                 temporary_path.replace(source_path)
-                await asyncio.to_thread(self._converter.convert, source_path, destination)
-                source_path.unlink(missing_ok=True)
-                LOGGER.info("Downloaded NOAA raw frame %s as %s", filename, output_filename)
-                return 1
+                return source_path
             except DOWNLOAD_RETRYABLE_ERRORS as err:
                 temporary_path.unlink(missing_ok=True)
                 source_path.unlink(missing_ok=True)
-                destination.unlink(missing_ok=True)
                 if attempt >= DOWNLOAD_RETRY_ATTEMPTS:
                     raise
                 LOGGER.warning(
@@ -356,10 +393,28 @@ class GoesDownloader:
             except Exception:
                 temporary_path.unlink(missing_ok=True)
                 source_path.unlink(missing_ok=True)
-                destination.unlink(missing_ok=True)
                 raise
 
-        return 0
+        return None
+
+    async def _convert_source_to_tiff(self, filename: str, source_path: Path) -> int:
+        output_filename = self._converter.output_filename(filename)
+        destination = self._raw_dir / output_filename
+        if destination.exists() and self._is_expected_brazil_tiff(destination):
+            source_path.unlink(missing_ok=True)
+            return 0
+        if destination.exists():
+            destination.unlink(missing_ok=True)
+
+        try:
+            await asyncio.to_thread(self._converter.convert, source_path, destination)
+            LOGGER.info("Downloaded NOAA raw frame %s as %s", filename, output_filename)
+            source_path.unlink(missing_ok=True)
+            return 1
+        except Exception:
+            source_path.unlink(missing_ok=True)
+            destination.unlink(missing_ok=True)
+            raise
 
     @staticmethod
     def _is_expected_brazil_tiff(path: Path) -> bool:
@@ -378,25 +433,6 @@ class GoesDownloader:
             and top >= expected_top - tolerance
         )
 
-    def _cleanup_old_files(self, keep_filenames: list[str]) -> None:
-        keep = set(keep_filenames)
-        for file_path in self._raw_dir.glob("*.tif"):
-            if file_path.name not in keep:
-                file_path.unlink(missing_ok=True)
-
-        kept_raws = sorted(
-            self._raw_dir.glob("*.tif"),
-            key=lambda path: _filename_timestamp_or_min(path.name),
-            reverse=True,
-        )
-        for file_path in kept_raws[self._raw_history :]:
-            file_path.unlink(missing_ok=True)
-
-        current_keep = {path.name for path in self._raw_dir.glob("*.tif")}
-        for file_path in self._source_dir.glob("*.nc"):
-            if self._converter.output_filename(file_path.name) not in current_keep:
-                file_path.unlink(missing_ok=True)
-
     def _emit_progress(self, **payload: object) -> None:
         if self._progress_callback is None:
             return
@@ -407,17 +443,6 @@ class GoesDownloader:
             return self._raw_history
         return min(self._raw_history, BOOTSTRAP_RAW_HISTORY)
 
-    def _build_keep_filenames(self, source_filenames: list[str], target_history: int) -> list[str]:
-        keep_filenames: list[str] = []
-        for source_filename in source_filenames:
-            output_filename = self._converter.output_filename(source_filename)
-            if not (self._raw_dir / output_filename).exists():
-                continue
-            keep_filenames.append(output_filename)
-            if len(keep_filenames) >= target_history:
-                break
-        return keep_filenames
-
     def _cached_source_filenames_from_disk(self) -> list[str]:
         return sorted(
             (
@@ -425,6 +450,13 @@ class GoesDownloader:
                 for path in self._raw_dir.glob("*.tif")
             ),
             key=_filename_timestamp_or_min,
+            reverse=True,
+        )
+
+    def _kept_raws_on_disk(self) -> list[Path]:
+        return sorted(
+            self._raw_dir.glob("*.tif"),
+            key=lambda path: _filename_timestamp_or_min(path.name),
             reverse=True,
         )
 

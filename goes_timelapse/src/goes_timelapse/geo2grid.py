@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -19,6 +20,7 @@ class Geo2GridConverter:
         grid: str = "wgs84_fit",
         method: str = "nearest",
         num_workers: int = 1,
+        scratch_dir: Path | None = None,
     ) -> None:
         self._command = command
         self._product = product
@@ -26,6 +28,7 @@ class Geo2GridConverter:
         self._grid = grid
         self._method = method
         self._num_workers = num_workers
+        self._scratch_dir = scratch_dir
 
     def set_ll_bbox(self, ll_bbox: tuple[float, float, float, float]) -> None:
         self._ll_bbox = ll_bbox
@@ -41,7 +44,9 @@ class Geo2GridConverter:
             raise RuntimeError(f"'{self._command}' não está disponível no ambiente")
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="geo2grid-", dir=output_path.parent) as temp_dir:
+        temp_root = self._scratch_dir or Path(tempfile.gettempdir())
+        temp_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="geo2grid-", dir=temp_root) as temp_dir:
             temporary_output = Path(temp_dir) / "frame.tif"
             command = [
                 self._command,
@@ -64,11 +69,17 @@ class Geo2GridConverter:
                 "-f",
                 str(source_path),
             ]
+            env = {
+                **os.environ,
+                # Reading netCDF/HDF5 files from NFS mounts is prone to lock issues.
+                "HDF5_USE_FILE_LOCKING": "FALSE",
+            }
             try:
                 subprocess.run(
                     command,
                     check=True,
                     capture_output=True,
+                    env=env,
                     text=True,
                     timeout=900,
                 )
@@ -83,4 +94,5 @@ class Geo2GridConverter:
                     f"Geo2Grid não gerou o GeoTIFF esperado para {source_path.name}"
                 )
 
-            temporary_output.replace(output_path)
+            output_path.unlink(missing_ok=True)
+            shutil.move(str(temporary_output), output_path)

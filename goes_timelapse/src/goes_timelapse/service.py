@@ -77,6 +77,7 @@ class GoesTimelapseService:
                 raw_dir=settings.raw_dir / RAW_SOURCE_VISIBLE,
                 raw_history=settings.raw_history,
                 band="C02",
+                scratch_dir=settings.scratch_dir / RAW_SOURCE_VISIBLE,
                 progress_callback=lambda payload: self._update_raw_download_status(
                     RAW_SOURCE_VISIBLE, payload
                 ),
@@ -87,6 +88,7 @@ class GoesTimelapseService:
                 raw_dir=settings.raw_dir / RAW_SOURCE_INFRARED,
                 raw_history=settings.raw_history,
                 band="C13",
+                scratch_dir=settings.scratch_dir / RAW_SOURCE_INFRARED,
                 progress_callback=lambda payload: self._update_raw_download_status(
                     RAW_SOURCE_INFRARED, payload
                 ),
@@ -114,6 +116,15 @@ class GoesTimelapseService:
 
     async def start(self) -> None:
         self.settings.ensure_directories()
+        self.settings.configure_runtime_environment()
+        LOGGER.info(
+            "Storage configured: data_dir=%s scratch_dir=%s media_dir=%s",
+            self.settings.data_dir,
+            self.settings.scratch_dir,
+            self.settings.media_dir,
+        )
+        if self.settings.scratch_dir_warning:
+            LOGGER.warning(self.settings.scratch_dir_warning)
         for area_id in self.state_store.tracked_ids():
             if self.catalog.get(area_id) is None:
                 LOGGER.info("Removing unsupported tracked area %s", area_id)
@@ -208,6 +219,8 @@ class GoesTimelapseService:
             "tracked_count": self.state_store.count_tracked(),
             "queue_length": self._queue.qsize(),
             "raw_frame_count": len(files),
+            "raw_timestamp_count": self._raw_timestamp_count(),
+            "raw_history_limit": self.settings.raw_history,
             "raw_frame_latest": files[0]["label"] if files else None,
             "raw_download_summary": " | ".join(summaries) if summaries else "Nenhuma fonte ativa",
             "raw_disk_usage_bytes": raw_disk_bytes,
@@ -296,24 +309,23 @@ class GoesTimelapseService:
                         error_messages.append(
                             f"{RAW_SOURCE_LABELS[plan.source_key]}: {report.failed_count} arquivo(s) falharam"
                         )
-
-                    latest_kept_timestamp = self._latest_kept_timestamp(report.kept_files)
-                    if report.kept_files:
-                        for area_id in plan.tracked_area_ids:
-                            if not self._area_needs_reprocessing(
-                                area_id,
-                                latest_kept_timestamp=latest_kept_timestamp,
-                                downloaded_count=report.downloaded_count,
-                            ):
-                                continue
-                            self.state_store.set_status(area_id, "queued", last_error=None)
-                            await self.enqueue(area_id)
             finally:
                 self._status["last_poll_finished_at"] = _utc_now()
 
+            latest_retained_timestamp = self._prune_raw_cache()
             self._status["last_poll_new_downloads"] = total_downloads
             if error_messages:
                 self._status["last_poll_error"] = " | ".join(error_messages)
+
+            for tracked in self.state_store.list_tracked():
+                if not self._area_needs_reprocessing(
+                    tracked.area_id,
+                    latest_kept_timestamp=latest_retained_timestamp,
+                    downloaded_count=total_downloads,
+                ):
+                    continue
+                self.state_store.set_status(tracked.area_id, "queued", last_error=None)
+                await self.enqueue(tracked.area_id)
 
     def _schedule_immediate_refresh(self) -> None:
         if self._immediate_refresh_task is not None and not self._immediate_refresh_task.done():
@@ -581,14 +593,7 @@ class GoesTimelapseService:
         return geometry.centroid
 
     def _build_frame_specs(self, area: AreaCatalogEntry) -> list[FrameSpec]:
-        source_paths = {
-            source_key: {
-                parse_goes_timestamp(path.name): path
-                for path in self._raw_files_in_dir(self._raw_dir_for_source(source_key))
-                if self._is_valid_raw(path)
-            }
-            for source_key in self._downloaders
-        }
+        source_paths = self._available_raw_paths_by_source()
         timestamps = sorted(
             {
                 *source_paths[RAW_SOURCE_VISIBLE].keys(),
@@ -746,6 +751,9 @@ class GoesTimelapseService:
         if phase == "downloading":
             detail = f"{completed}/{attempted}" if attempted else "iniciando"
             return f"Baixando ({detail}, {active} ativos)"
+        if phase == "processing":
+            detail = f"{completed}/{attempted}" if attempted else "iniciando"
+            return f"Convertendo ({detail}, {active} ativos)"
         if phase == "partial":
             if reason:
                 return f"{raw_frame_count} arquivo(s) em disco; {reason.lower()}"
@@ -784,6 +792,15 @@ class GoesTimelapseService:
         )
         return all_files
 
+    def _raw_timestamp_count(self) -> int:
+        return len(
+            {
+                parse_goes_timestamp(str(item["filename"]))
+                for item in self._all_raw_files()
+                if parse_goes_timestamp(str(item["filename"]))
+            }
+        )
+
     def _raw_disk_usage_bytes(self) -> int:
         total = 0
         for source_key in self._downloaders:
@@ -813,6 +830,115 @@ class GoesTimelapseService:
     def _raw_dir_for_source(self, source_key: str) -> Path:
         return self.settings.raw_dir / source_key
 
+    def _available_raw_paths_by_source(self) -> dict[str, dict[str, Path]]:
+        paths_by_source: dict[str, dict[str, Path]] = {}
+        for source_key in self._downloaders:
+            entries: dict[str, Path] = {}
+            for path in self._raw_dir_for_source(source_key).glob("*.tif"):
+                if not self._is_valid_raw(path):
+                    continue
+                entries[parse_goes_timestamp(path.name)] = path
+            paths_by_source[source_key] = entries
+        return paths_by_source
+
+    def _required_sources_for_timestamp(
+        self,
+        area_entries: list[AreaCatalogEntry],
+        timestamp: str,
+        source_paths: dict[str, dict[str, Path]],
+    ) -> set[str]:
+        moment_utc = _goes_timestamp_to_datetime(timestamp)
+        if moment_utc is None:
+            return set()
+
+        visible_path = source_paths[RAW_SOURCE_VISIBLE].get(timestamp)
+        infrared_path = source_paths[RAW_SOURCE_INFRARED].get(timestamp)
+        required_sources: set[str] = set()
+
+        for area in area_entries:
+            sunrise_alpha = self._sunrise_transition_alpha(area, moment_utc)
+            sunset_alpha = self._sunset_transition_alpha(area, moment_utc)
+            if sunrise_alpha is not None or sunset_alpha is not None:
+                if visible_path is not None:
+                    required_sources.add(RAW_SOURCE_VISIBLE)
+                if infrared_path is not None:
+                    required_sources.add(RAW_SOURCE_INFRARED)
+                continue
+
+            prefers_visible = self._prefers_visible(area, moment_utc)
+            if prefers_visible:
+                if visible_path is not None:
+                    required_sources.add(RAW_SOURCE_VISIBLE)
+                elif infrared_path is not None:
+                    required_sources.add(RAW_SOURCE_INFRARED)
+            else:
+                if infrared_path is not None:
+                    required_sources.add(RAW_SOURCE_INFRARED)
+                elif visible_path is not None:
+                    required_sources.add(RAW_SOURCE_VISIBLE)
+
+        return required_sources
+
+    def _build_global_raw_keep_set(self) -> dict[str, set[str]]:
+        tracked_areas = [
+            area
+            for tracked in self.state_store.list_tracked()
+            if (area := self.catalog.get(tracked.area_id)) is not None
+        ]
+        source_paths = self._available_raw_paths_by_source()
+        timestamps = sorted(
+            {
+                *source_paths[RAW_SOURCE_VISIBLE].keys(),
+                *source_paths[RAW_SOURCE_INFRARED].keys(),
+            },
+            reverse=True,
+        )
+        keep_by_source = {source_key: set() for source_key in self._downloaders}
+        kept_timestamps = 0
+
+        for timestamp in timestamps:
+            required_sources = self._required_sources_for_timestamp(
+                tracked_areas,
+                timestamp,
+                source_paths,
+            )
+            if not required_sources:
+                continue
+            kept_timestamps += 1
+            for source_key in required_sources:
+                path = source_paths[source_key].get(timestamp)
+                if path is not None:
+                    keep_by_source[source_key].add(path.name)
+            if kept_timestamps >= self.settings.raw_history:
+                break
+
+        return keep_by_source
+
+    def _prune_raw_cache(self) -> str | None:
+        keep_by_source = self._build_global_raw_keep_set()
+        for source_key in self._downloaders:
+            raw_dir = self._raw_dir_for_source(source_key)
+            keep_raws = keep_by_source[source_key]
+            for file_path in raw_dir.glob("*.tif"):
+                if file_path.name not in keep_raws:
+                    file_path.unlink(missing_ok=True)
+
+            source_dir = self.settings.source_dir / source_key
+            for file_path in source_dir.glob("*.nc"):
+                if _output_name_for_source_file(file_path.name) not in keep_raws:
+                    file_path.unlink(missing_ok=True)
+            for file_path in source_dir.glob("*.nc.part"):
+                source_name = file_path.name.removesuffix(".part")
+                if _output_name_for_source_file(source_name) not in keep_raws:
+                    file_path.unlink(missing_ok=True)
+
+        retained_files = [
+            path
+            for source_key in self._downloaders
+            for path in self._raw_dir_for_source(source_key).glob("*.tif")
+        ]
+        return self._latest_kept_timestamp(retained_files)
+
     @staticmethod
     def _raw_files_in_dir(raw_dir: Path) -> list[Path]:
         files = list(raw_dir.glob("*.tif"))
@@ -835,6 +961,7 @@ def _download_phase_label(phase: str) -> str:
         "paused": "pausado",
         "idle": "ocioso",
         "downloading": "baixando",
+        "processing": "convertendo",
         "partial": "parcial",
         "ready": "pronto",
         "error": "erro",
@@ -859,3 +986,7 @@ def _goes_timestamp_to_datetime(timestamp: str) -> datetime | None:
 
     moment = datetime(year, 1, 1, hour=hour, minute=minute, tzinfo=UTC)
     return moment.replace(tzinfo=UTC) + timedelta(days=day_of_year - 1)
+
+
+def _output_name_for_source_file(source_filename: str) -> str:
+    return f"{Path(source_filename).stem}.tif"
