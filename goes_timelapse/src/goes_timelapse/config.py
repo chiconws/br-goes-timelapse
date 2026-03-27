@@ -47,7 +47,7 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         package_dir = Path(__file__).resolve().parent
-        data_dir = Path(os.getenv("GOES_DATA_DIR", "/data/goes_timelapse"))
+        data_dir = Path(os.getenv("GOES_DATA_DIR", "/data/goes_timelapse")).expanduser()
         source_dir = data_dir / "source"
         raw_dir = data_dir / "raw"
         processed_dir = data_dir / "processed"

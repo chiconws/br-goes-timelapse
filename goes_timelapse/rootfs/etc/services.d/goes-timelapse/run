@@ -1,6 +1,7 @@
 #!/usr/bin/with-contenv bashio
 set -euo pipefail
 
+export GOES_DATA_DIR="$(bashio::config 'data_dir')"
 export GOES_POLL_MINUTES="$(bashio::config 'poll_minutes')"
 export GOES_FRAME_COUNT="$(bashio::config 'frame_count')"
 export GOES_GIF_FPS="$(bashio::config 'gif_fps')"

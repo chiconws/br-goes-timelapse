@@ -1,5 +1,10 @@
 # Histórico de mudanças
 
+## 1.0.4
+
+- Adiciona a opção `data_dir` na configuração do add-on para mover o cache e os temporários para outro diretório.
+- Passa a respeitar `GOES_DATA_DIR` no bootstrap do add-on, permitindo usar um volume maior para `source`, `raw`, `processed`, `geometry` e `state.db`.
+
 ## 1.0.3
 
 - Adiciona a pipeline dia/noite com Banda 2 de dia, Banda 13 à noite e transições no amanhecer e no entardecer.
