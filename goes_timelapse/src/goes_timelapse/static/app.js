@@ -294,7 +294,16 @@
     var rows = [
       ["Acompanhadas", safeValue(status.tracked_count)],
       ["Fila", safeValue(status.queue_length)],
-      ["Quadros brutos", safeValue(status.raw_frame_count)],
+      ["Arquivos brutos", safeValue(status.raw_frame_count)],
+      ["Timestamps úteis", safeValue(status.raw_timestamp_count)],
+      [
+        "Cap de retenção",
+        safeValue(
+          status.raw_history_limit !== null && status.raw_history_limit !== undefined
+            ? String(status.raw_history_limit) + " timestamps totais"
+            : "Nenhum"
+        ),
+      ],
       ["Download bruto", safeValue(status.raw_download_summary)],
       ["Uso em disco (raws)", formatBytes(status.raw_disk_usage_bytes || 0)],
       ["Livre em disco", formatBytes(status.disk_free_bytes || 0)],
@@ -505,8 +514,16 @@
 
   function renderActiveDownload(item) {
     var fileLabel = describeRawFile(item.filename || "");
-    var percent = item.percent;
+    var stage = String(item.stage || "downloading");
+    var converting = stage === "converting";
+    var percent = converting ? 100 : item.percent;
     var width = percent === null || percent === undefined ? 4 : Math.max(4, Math.min(100, percent));
+    var progressText = converting
+      ? escapeHtml(formatBytes(item.total_bytes || item.downloaded_bytes || 0)) + " • Convertendo"
+      : escapeHtml(formatBytes(item.downloaded_bytes || 0)) +
+        " / " +
+        escapeHtml(item.total_bytes ? formatBytes(item.total_bytes) : "tamanho desconhecido") +
+        (percent === null || percent === undefined ? "" : " (" + escapeHtml(String(percent)) + "%)");
     return (
       '<div class="download-item">' +
       '<div class="download-item-head">' +
@@ -519,10 +536,7 @@
       "</span>" +
       "</div>" +
       '<span class="download-item-size">' +
-      escapeHtml(formatBytes(item.downloaded_bytes || 0)) +
-      " / " +
-      escapeHtml(item.total_bytes ? formatBytes(item.total_bytes) : "tamanho desconhecido") +
-      (percent === null || percent === undefined ? "" : " (" + escapeHtml(String(percent)) + "%)") +
+      progressText +
       "</span>" +
       "</div>" +
       '<div class="progress-bar"><span style="width:' +
