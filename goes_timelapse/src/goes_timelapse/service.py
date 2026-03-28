@@ -182,6 +182,52 @@ class GoesTimelapseService:
         self._queued_ids.discard(area_id)
         self._cleanup_area_files(area_id)
 
+    async def set_marker(
+        self,
+        area_id: str,
+        *,
+        marker_lat: float,
+        marker_lon: float,
+    ) -> TrackedArea:
+        tracked = self.state_store.get_tracked(area_id)
+        if tracked is None:
+            raise KeyError(area_id)
+
+        area = self.catalog.get(area_id)
+        if area is None or area.area_type != "municipio":
+            raise ValueError("O marcador só é suportado para municípios acompanhados")
+
+        geometry = await asyncio.to_thread(self.geometry_store.load_geometry, area)
+        if not _point_within_polygon((marker_lon, marker_lat), geometry.polygon):
+            raise ValueError("As coordenadas precisam estar dentro do município selecionado")
+
+        self.state_store.set_marker(
+            area_id,
+            marker_lat=marker_lat,
+            marker_lon=marker_lon,
+        )
+        self.state_store.set_status(area_id, "queued", last_error=None)
+        await self.enqueue(area_id)
+        updated = self.state_store.get_tracked(area_id)
+        assert updated is not None
+        return updated
+
+    async def clear_marker(self, area_id: str) -> TrackedArea:
+        tracked = self.state_store.get_tracked(area_id)
+        if tracked is None:
+            raise KeyError(area_id)
+
+        self.state_store.set_marker(
+            area_id,
+            marker_lat=None,
+            marker_lon=None,
+        )
+        self.state_store.set_status(area_id, "queued", last_error=None)
+        await self.enqueue(area_id)
+        updated = self.state_store.get_tracked(area_id)
+        assert updated is not None
+        return updated
+
     async def enqueue(self, area_id: str) -> None:
         if not self.state_store.is_tracked(area_id):
             return
@@ -363,6 +409,9 @@ class GoesTimelapseService:
         if area is None:
             self.state_store.set_status(area_id, "error", last_error="Área não encontrada")
             return None
+        tracked = self.state_store.get_tracked(area_id)
+        if tracked is None:
+            return None
 
         frame_specs = self._build_frame_specs(area)
         if not frame_specs:
@@ -372,7 +421,15 @@ class GoesTimelapseService:
         self.state_store.set_status(area_id, "processing", last_error=None)
         try:
             geometry = self.geometry_store.load_geometry(area)
-            png_paths = self.renderer.process_frames(area, geometry, frame_specs)
+            marker_coordinates = None
+            if tracked.marker_lat is not None and tracked.marker_lon is not None:
+                marker_coordinates = (tracked.marker_lon, tracked.marker_lat)
+            png_paths = self.renderer.process_frames(
+                area,
+                geometry,
+                frame_specs,
+                marker_coordinates=marker_coordinates,
+            )
             if not png_paths:
                 self.state_store.set_status(
                     area_id, "error", last_error="Nenhum quadro foi renderizado"
@@ -990,3 +1047,54 @@ def _goes_timestamp_to_datetime(timestamp: str) -> datetime | None:
 
 def _output_name_for_source_file(source_filename: str) -> str:
     return f"{Path(source_filename).stem}.tif"
+
+
+def _point_within_polygon(
+    point: tuple[float, float],
+    polygon: tuple[tuple[float, float], ...],
+) -> bool:
+    if len(polygon) < 3:
+        return False
+
+    vertices = list(polygon)
+    if vertices[0] != vertices[-1]:
+        vertices.append(vertices[0])
+
+    for start, end in zip(vertices, vertices[1:]):
+        if _point_on_segment(point, start, end):
+            return True
+
+    point_lon, point_lat = point
+    inside = False
+    for (lon_a, lat_a), (lon_b, lat_b) in zip(vertices, vertices[1:]):
+        intersects = ((lat_a > point_lat) != (lat_b > point_lat)) and (
+            point_lon < (lon_b - lon_a) * (point_lat - lat_a) / (lat_b - lat_a) + lon_a
+        )
+        if intersects:
+            inside = not inside
+    return inside
+
+
+def _point_on_segment(
+    point: tuple[float, float],
+    segment_start: tuple[float, float],
+    segment_end: tuple[float, float],
+    *,
+    tolerance: float = 1e-9,
+) -> bool:
+    point_lon, point_lat = point
+    start_lon, start_lat = segment_start
+    end_lon, end_lat = segment_end
+
+    cross_product = (
+        (point_lat - start_lat) * (end_lon - start_lon)
+        - (point_lon - start_lon) * (end_lat - start_lat)
+    )
+    if abs(cross_product) > tolerance:
+        return False
+
+    min_lon = min(start_lon, end_lon) - tolerance
+    max_lon = max(start_lon, end_lon) + tolerance
+    min_lat = min(start_lat, end_lat) - tolerance
+    max_lat = max(start_lat, end_lat) + tolerance
+    return min_lon <= point_lon <= max_lon and min_lat <= point_lat <= max_lat

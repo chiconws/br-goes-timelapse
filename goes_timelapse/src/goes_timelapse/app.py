@@ -6,6 +6,7 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from goes_timelapse.catalog import AreaCatalog
@@ -13,9 +14,14 @@ from goes_timelapse.config import Settings
 from goes_timelapse.service import GoesTimelapseService
 from goes_timelapse.state import StateStore
 
-STATIC_ASSET_VERSION = "20260321-1"
+STATIC_ASSET_VERSION = "20260327-1"
 STATIC_APP_JS_ROUTE = f"/static/app-{STATIC_ASSET_VERSION}.js"
 STATIC_STYLES_ROUTE = f"/static/styles-{STATIC_ASSET_VERSION}.css"
+
+
+class MarkerPayload(BaseModel):
+    lat: float
+    lon: float
 
 
 def create_app(
@@ -128,6 +134,8 @@ def create_app(
                     "last_error": area.last_error,
                     "latest_source_timestamp": area.latest_source_timestamp,
                     "media_exists": media_exists,
+                    "marker_lat": area.marker_lat,
+                    "marker_lon": area.marker_lon,
                     "media_source": (
                         f"media-source://media_source/local/goes_timelapse/{area.area_id}.webp"
                         if media_exists
@@ -154,6 +162,46 @@ def create_app(
         return {
             "area_id": tracked_item.area_id,
             "status": tracked_item.status,
+        }
+
+    @app.put("/api/tracked/{area_id}/marker")
+    async def upsert_marker(
+        request: Request,
+        area_id: str,
+        payload: MarkerPayload,
+    ) -> dict[str, object]:
+        service: GoesTimelapseService = request.app.state.service
+        try:
+            tracked_item = await service.set_marker(
+                area_id,
+                marker_lat=payload.lat,
+                marker_lon=payload.lon,
+            )
+        except KeyError as err:
+            raise HTTPException(status_code=404, detail="Município acompanhado não encontrado") from err
+        except ValueError as err:
+            raise HTTPException(status_code=422, detail=str(err)) from err
+
+        return {
+            "area_id": tracked_item.area_id,
+            "status": tracked_item.status,
+            "marker_lat": tracked_item.marker_lat,
+            "marker_lon": tracked_item.marker_lon,
+        }
+
+    @app.delete("/api/tracked/{area_id}/marker")
+    async def delete_marker(request: Request, area_id: str) -> dict[str, object]:
+        service: GoesTimelapseService = request.app.state.service
+        try:
+            tracked_item = await service.clear_marker(area_id)
+        except KeyError as err:
+            raise HTTPException(status_code=404, detail="Município acompanhado não encontrado") from err
+
+        return {
+            "area_id": tracked_item.area_id,
+            "status": tracked_item.status,
+            "marker_lat": tracked_item.marker_lat,
+            "marker_lon": tracked_item.marker_lon,
         }
 
     @app.delete("/api/tracked/{area_id}")

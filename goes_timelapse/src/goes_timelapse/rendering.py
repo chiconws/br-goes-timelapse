@@ -35,6 +35,7 @@ class RenderPlan:
     scaled_polygon: tuple[tuple[float, float], ...]
     scaled_state_lines: tuple[tuple[tuple[float, float], ...], ...]
     output_size: tuple[int, int]
+    scaled_marker: tuple[float, float] | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -85,7 +86,12 @@ class AreaRenderer:
             self._state_boundary_lines = ()
 
     def process_frames(
-        self, area: AreaCatalogEntry, geometry: AreaGeometry, frame_inputs: list[Path | FrameSpec]
+        self,
+        area: AreaCatalogEntry,
+        geometry: AreaGeometry,
+        frame_inputs: list[Path | FrameSpec],
+        *,
+        marker_coordinates: tuple[float, float] | None = None,
     ) -> list[Path]:
         frame_specs = self._coerce_frame_specs(frame_inputs)[-self._settings.frame_count :]
         if not frame_specs:
@@ -95,7 +101,7 @@ class AreaRenderer:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         with _open_source(frame_specs[0].primary_path) as src:
-            plan = self._build_render_plan(geometry, src)
+            plan = self._build_render_plan(geometry, src, marker_coordinates=marker_coordinates)
 
         rendered_paths: list[Path] = []
         keep_filenames = set()
@@ -123,6 +129,11 @@ class AreaRenderer:
             "blend_alpha": round(frame_spec.blend_alpha, 4),
             "dst_bounds": [round(value, 6) for value in plan.dst_bounds],
             "output_size": list(plan.output_size),
+            "marker": (
+                [round(plan.scaled_marker[0], 2), round(plan.scaled_marker[1], 2)]
+                if plan.scaled_marker is not None
+                else None
+            ),
         }
         digest = hashlib.sha1(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -138,7 +149,11 @@ class AreaRenderer:
         output_dir.rmdir()
 
     def _build_render_plan(
-        self, geometry: AreaGeometry, src
+        self,
+        geometry: AreaGeometry,
+        src,
+        *,
+        marker_coordinates: tuple[float, float] | None = None,
     ) -> RenderPlan:
         dst_bounds = self._fit_destination_bounds_to_source(
             self._build_destination_bounds(geometry),
@@ -169,6 +184,13 @@ class AreaRenderer:
             output_width=output_width,
             output_height=output_height,
         )
+        scaled_marker = self._scale_marker_to_output(
+            geometry=geometry,
+            marker_coordinates=marker_coordinates,
+            dst_bounds=dst_bounds,
+            output_width=output_width,
+            output_height=output_height,
+        )
 
         return RenderPlan(
             window=window,
@@ -176,6 +198,7 @@ class AreaRenderer:
             scaled_polygon=tuple(scaled_polygon),
             scaled_state_lines=tuple(scaled_state_lines),
             output_size=(output_width, output_height),
+            scaled_marker=scaled_marker,
         )
 
     def _fit_destination_bounds_to_source(
@@ -245,6 +268,21 @@ class AreaRenderer:
         ]
         if polygon_points:
             draw.line(polygon_points + [polygon_points[0]], fill=(255, 214, 10, 255), width=2)
+
+        if plan.scaled_marker is not None:
+            marker_x, marker_y = plan.scaled_marker
+            marker_radius = max(4, int(round(image.size[0] * 0.008)))
+            draw.ellipse(
+                (
+                    marker_x - marker_radius,
+                    marker_y - marker_radius,
+                    marker_x + marker_radius,
+                    marker_y + marker_radius,
+                ),
+                fill=(220, 42, 42, 255),
+                outline=(255, 255, 255, 220),
+                width=1,
+            )
 
         self._draw_overlay(
             draw,
@@ -499,6 +537,37 @@ class AreaRenderer:
             y = ((top - lat) / height) * output_height
             scaled.append((x, y))
         return scaled
+
+    def _scale_marker_to_output(
+        self,
+        *,
+        geometry: AreaGeometry,
+        marker_coordinates: tuple[float, float] | None,
+        dst_bounds: tuple[float, float, float, float],
+        output_width: int,
+        output_height: int,
+    ) -> tuple[float, float] | None:
+        if marker_coordinates is None:
+            return None
+
+        scaled = self._scale_polygon_to_output(
+            (marker_coordinates,),
+            dst_bounds,
+            output_width,
+            output_height,
+        )
+        if not scaled:
+            return None
+
+        marker_x, marker_y = scaled[0]
+        if not (0 <= marker_x <= output_width and 0 <= marker_y <= output_height):
+            LOGGER.warning(
+                "Marker for %s fell outside render bounds; skipping marker overlay",
+                geometry.area_id,
+            )
+            return None
+
+        return (marker_x, marker_y)
 
     @staticmethod
     def _coerce_frame_specs(frame_inputs: list[Path | FrameSpec]) -> list[FrameSpec]:

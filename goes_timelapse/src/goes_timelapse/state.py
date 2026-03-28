@@ -39,12 +39,25 @@ class StateStore:
                     last_error TEXT,
                     latest_source_timestamp TEXT,
                     media_path TEXT,
-                    snippet_path TEXT
+                    snippet_path TEXT,
+                    marker_lat REAL,
+                    marker_lon REAL
                 )
                 """
             )
+            self._ensure_tracked_area_columns()
             self._maybe_migrate_municipality_table()
             self._connection.commit()
+
+    def _ensure_tracked_area_columns(self) -> None:
+        existing_columns = {
+            str(row[1])
+            for row in self._connection.execute("PRAGMA table_info(tracked_areas)").fetchall()
+        }
+        if "marker_lat" not in existing_columns:
+            self._connection.execute("ALTER TABLE tracked_areas ADD COLUMN marker_lat REAL")
+        if "marker_lon" not in existing_columns:
+            self._connection.execute("ALTER TABLE tracked_areas ADD COLUMN marker_lon REAL")
 
     def _maybe_migrate_municipality_table(self) -> None:
         cursor = self._connection.execute(
@@ -96,7 +109,7 @@ class StateStore:
                 """
                 SELECT area_id, area_type, area_code, name, state_code, state_name, parent_name,
                        status, tracked_at, updated_at, last_error, latest_source_timestamp,
-                       media_path, snippet_path
+                       media_path, snippet_path, marker_lat, marker_lon
                 FROM tracked_areas
                 ORDER BY tracked_at ASC
                 """
@@ -109,7 +122,7 @@ class StateStore:
                 """
                 SELECT area_id, area_type, area_code, name, state_code, state_name, parent_name,
                        status, tracked_at, updated_at, last_error, latest_source_timestamp,
-                       media_path, snippet_path
+                       media_path, snippet_path, marker_lat, marker_lon
                 FROM tracked_areas
                 WHERE area_id = ?
                 """,
@@ -203,6 +216,24 @@ class StateStore:
             )
             self._connection.commit()
 
+    def set_marker(
+        self,
+        area_id: str,
+        *,
+        marker_lat: float | None,
+        marker_lon: float | None,
+    ) -> None:
+        with self._lock:
+            self._connection.execute(
+                """
+                UPDATE tracked_areas
+                SET marker_lat = ?, marker_lon = ?, updated_at = ?
+                WHERE area_id = ?
+                """,
+                (marker_lat, marker_lon, self._now(), area_id),
+            )
+            self._connection.commit()
+
     @staticmethod
     def _row_to_tracked(row: sqlite3.Row) -> TrackedArea:
         return TrackedArea(
@@ -220,6 +251,8 @@ class StateStore:
             latest_source_timestamp=row["latest_source_timestamp"],
             media_path=row["media_path"],
             snippet_path=row["snippet_path"],
+            marker_lat=float(row["marker_lat"]) if row["marker_lat"] is not None else None,
+            marker_lon=float(row["marker_lon"]) if row["marker_lon"] is not None else None,
         )
 
     @staticmethod

@@ -120,16 +120,25 @@
       return;
     }
 
-    if (button.getAttribute("data-action") !== "remove") {
-      return;
-    }
-
+    var action = button.getAttribute("data-action");
     var areaId = button.getAttribute("data-area-id");
     if (!areaId) {
       return;
     }
 
-    removeTracked(areaId, button.getAttribute("data-display-name") || areaId, button);
+    if (action === "remove") {
+      removeTracked(areaId, button.getAttribute("data-display-name") || areaId, button);
+      return;
+    }
+
+    if (action === "save-marker") {
+      saveMarker(areaId, button);
+      return;
+    }
+
+    if (action === "remove-marker") {
+      removeMarker(areaId, button);
+    }
   }
 
   function loadStatus() {
@@ -287,6 +296,61 @@
         }
 
         setFeedback("error", error.message || "Não foi possível remover o município.");
+      });
+  }
+
+  function saveMarker(areaId, button) {
+    var editor = button.closest(".marker-editor");
+    var latInput = editor ? editor.querySelector('[data-marker-field="lat"]') : null;
+    var lonInput = editor ? editor.querySelector('[data-marker-field="lon"]') : null;
+    var lat = latInput ? Number(latInput.value) : NaN;
+    var lon = lonInput ? Number(lonInput.value) : NaN;
+
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      setFeedback("error", "Informe latitude e longitude válidas.");
+      return;
+    }
+
+    if (button) {
+      button.disabled = true;
+    }
+
+    setFeedback("pending", "Salvando ponto...");
+    fetchJson("api/tracked/" + encodeURIComponent(areaId) + "/marker", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lat: lat, lon: lon }),
+    })
+      .then(function () {
+        setFeedback("success", "Ponto salvo no município.");
+        return Promise.all([loadTracked(), loadStatus()]);
+      })
+      .catch(function (error) {
+        if (button) {
+          button.disabled = false;
+        }
+        setFeedback("error", error.message || "Não foi possível salvar o ponto.");
+      });
+  }
+
+  function removeMarker(areaId, button) {
+    if (button) {
+      button.disabled = true;
+    }
+
+    setFeedback("pending", "Removendo ponto...");
+    fetchJson("api/tracked/" + encodeURIComponent(areaId) + "/marker", {
+      method: "DELETE",
+    })
+      .then(function () {
+        setFeedback("success", "Ponto removido.");
+        return Promise.all([loadTracked(), loadStatus()]);
+      })
+      .catch(function (error) {
+        if (button) {
+          button.disabled = false;
+        }
+        setFeedback("error", error.message || "Não foi possível remover o ponto.");
       });
   }
 
@@ -591,6 +655,7 @@
     var errorMarkup = "";
     var noteMarkup = "";
     var actions = [];
+    var markerMarkup = renderMarkerEditor(area);
     var previewUrl = buildPreviewUrl(area);
 
     if (area.media_exists && previewUrl) {
@@ -639,12 +704,57 @@
       "</span>" +
       "</div>" +
       previewMarkup +
+      markerMarkup +
       noteMarkup +
       errorMarkup +
       '<div class="tracked-actions">' +
       actions.join("") +
       "</div>" +
       "</article>"
+    );
+  }
+
+  function renderMarkerEditor(area) {
+    var hasMarker = area.marker_lat !== null && area.marker_lat !== undefined &&
+      area.marker_lon !== null && area.marker_lon !== undefined;
+    var latValue = hasMarker ? String(area.marker_lat) : "";
+    var lonValue = hasMarker ? String(area.marker_lon) : "";
+
+    return (
+      '<section class="marker-editor">' +
+      '<div class="marker-editor-copy">' +
+      '<strong class="marker-editor-title">Ponto opcional no município</strong>' +
+      '<span class="marker-editor-note">' +
+      escapeHtml(hasMarker ? "Ponto salvo. Você pode atualizar ou remover." : "Informe latitude e longitude para marcar um ponto no timelapse.") +
+      "</span>" +
+      "</div>" +
+      '<div class="marker-editor-fields">' +
+      '<label class="marker-field">' +
+      "<span>Latitude</span>" +
+      '<input type="number" step="0.000001" inputmode="decimal" data-marker-field="lat" value="' +
+      escapeHtml(latValue) +
+      '" placeholder="-20.3774" />' +
+      "</label>" +
+      '<label class="marker-field">' +
+      "<span>Longitude</span>" +
+      '<input type="number" step="0.000001" inputmode="decimal" data-marker-field="lon" value="' +
+      escapeHtml(lonValue) +
+      '" placeholder="-40.2976" />' +
+      "</label>" +
+      "</div>" +
+      '<div class="marker-editor-actions">' +
+      '<button class="marker-save" type="button" data-action="save-marker" data-area-id="' +
+      escapeHtml(area.area_id) +
+      '">' +
+      escapeHtml(hasMarker ? "Atualizar ponto" : "Salvar ponto") +
+      "</button>" +
+      (hasMarker
+        ? '<button class="marker-remove" type="button" data-action="remove-marker" data-area-id="' +
+          escapeHtml(area.area_id) +
+          '">Remover ponto</button>'
+        : "") +
+      "</div>" +
+      "</section>"
     );
   }
 

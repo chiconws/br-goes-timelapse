@@ -86,6 +86,8 @@ class TrackedArea:
     latest_source_timestamp: str | None
     media_path: str | None
     snippet_path: str | None
+    marker_lat: float | None
+    marker_lon: float | None
 
     @property
     def type_label(self) -> str:
