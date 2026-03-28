@@ -1,5 +1,12 @@
 # Histórico de mudanças
 
+## 1.1.0
+
+- Adiciona um ponto opcional por município, configurável no card do add-on, para marcar uma coordenada específica dentro do polígono.
+- Adiciona pontos azuis de descargas elétricas usando `GLM-L2-LCFA` do GOES-19.
+- Inclui uma terceira fonte automática, `Descargas GLM`, no painel de downloads do add-on.
+- Agrega os flashes por janela de `10` minutos e desenha os pontos diretamente sobre cada frame do timelapse.
+
 ## 1.0.5
 
 - Adiciona `scratch_dir` para separar temporários intensivos em RAM do cache persistente em disco.
