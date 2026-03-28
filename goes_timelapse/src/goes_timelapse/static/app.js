@@ -967,7 +967,7 @@
   }
 
   function describeRawFile(filename) {
-    var captureDate = parseGoesCaptureDate(filename);
+    var captureDate = parseGoesCaptureDate(filename) || parseSlotCaptureDate(filename);
     var bandMatch = String(filename || "").match(/M6(C\d{2})/);
     var bandLabel = bandMatch ? bandMatch[1] : "";
     var shortName = String(filename || "");
@@ -983,6 +983,19 @@
       primary: shortName || "Nenhum",
       secondary: bandLabel ? bandLabel : "",
     };
+  }
+
+  function parseSlotCaptureDate(filename) {
+    var match = String(filename || "").match(/^(\d{4})(\d{3})(\d{2})(\d{2})_/);
+    var start;
+
+    if (!match) {
+      return null;
+    }
+
+    start = new Date(Date.UTC(Number(match[1]), 0, 1, Number(match[3]), Number(match[4]), 0));
+    start.setUTCDate(start.getUTCDate() + Number(match[2]) - 1);
+    return start;
   }
 
   function parseGoesCaptureDate(filename) {

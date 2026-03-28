@@ -14,7 +14,7 @@ from goes_timelapse.config import Settings
 from goes_timelapse.service import GoesTimelapseService
 from goes_timelapse.state import StateStore
 
-STATIC_ASSET_VERSION = "20260327-1"
+STATIC_ASSET_VERSION = "20260327-2"
 STATIC_APP_JS_ROUTE = f"/static/app-{STATIC_ASSET_VERSION}.js"
 STATIC_STYLES_ROUTE = f"/static/styles-{STATIC_ASSET_VERSION}.css"
 

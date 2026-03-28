@@ -44,6 +44,7 @@ class FrameSpec:
     primary_path: Path
     blend_path: Path | None = None
     blend_alpha: float = 0.0
+    lightning_points: tuple[tuple[float, float], ...] = ()
 
 
 def parse_goes_timestamp(filename: str) -> str:
@@ -134,6 +135,10 @@ class AreaRenderer:
                 if plan.scaled_marker is not None
                 else None
             ),
+            "lightning_points": [
+                [round(point[0], 4), round(point[1], 4)]
+                for point in frame_spec.lightning_points
+            ],
         }
         digest = hashlib.sha1(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -268,6 +273,27 @@ class AreaRenderer:
         ]
         if polygon_points:
             draw.line(polygon_points + [polygon_points[0]], fill=(255, 214, 10, 255), width=2)
+
+        lightning_points = self._scale_points_to_output(
+            frame_spec.lightning_points,
+            plan.dst_bounds,
+            image.size[0],
+            image.size[1],
+        )
+        if lightning_points:
+            lightning_radius = max(2, int(round(image.size[0] * 0.0045)))
+            for lightning_x, lightning_y in lightning_points:
+                draw.ellipse(
+                    (
+                        lightning_x - lightning_radius,
+                        lightning_y - lightning_radius,
+                        lightning_x + lightning_radius,
+                        lightning_y + lightning_radius,
+                    ),
+                    fill=(42, 121, 255, 255),
+                    outline=(255, 255, 255, 180),
+                    width=1,
+                )
 
         if plan.scaled_marker is not None:
             marker_x, marker_y = plan.scaled_marker
@@ -537,6 +563,25 @@ class AreaRenderer:
             y = ((top - lat) / height) * output_height
             scaled.append((x, y))
         return scaled
+
+    def _scale_points_to_output(
+        self,
+        points: tuple[tuple[float, float], ...],
+        dst_bounds: tuple[float, float, float, float],
+        output_width: int,
+        output_height: int,
+    ) -> list[tuple[float, float]]:
+        scaled_points = self._scale_polygon_to_output(
+            points,
+            dst_bounds,
+            output_width,
+            output_height,
+        )
+        return [
+            (point_x, point_y)
+            for point_x, point_y in scaled_points
+            if 0 <= point_x <= output_width and 0 <= point_y <= output_height
+        ]
 
     def _scale_marker_to_output(
         self,

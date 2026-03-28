@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import shutil
 from dataclasses import dataclass
@@ -11,7 +12,7 @@ from rasterio.windows import Window
 
 from goes_timelapse.catalog import AreaCatalog
 from goes_timelapse.config import Settings
-from goes_timelapse.downloader import DownloadReport, GoesDownloader
+from goes_timelapse.downloader import DownloadReport, GlmDownloader, GoesDownloader
 from goes_timelapse.ibge import IbgeGeometryStore
 from goes_timelapse.models import AreaCatalogEntry, RenderedArea, TrackedArea
 from goes_timelapse.raster_sources import open_raster_source
@@ -35,9 +36,11 @@ LOGGER = logging.getLogger(__name__)
 
 RAW_SOURCE_VISIBLE = "visible"
 RAW_SOURCE_INFRARED = "infrared"
+RAW_SOURCE_LIGHTNING = "lightning"
 RAW_SOURCE_LABELS = {
     RAW_SOURCE_VISIBLE: "Visível B2",
     RAW_SOURCE_INFRARED: "Infravermelho B13",
+    RAW_SOURCE_LIGHTNING: "Descargas GLM",
 }
 TRANSITION_BLEND_WEIGHTS = DEFAULT_TRANSITION_BLEND_WEIGHTS
 SLOT_MINUTES = 10
@@ -91,6 +94,15 @@ class GoesTimelapseService:
                 scratch_dir=settings.scratch_dir / RAW_SOURCE_INFRARED,
                 progress_callback=lambda payload: self._update_raw_download_status(
                     RAW_SOURCE_INFRARED, payload
+                ),
+            ),
+            RAW_SOURCE_LIGHTNING: GlmDownloader(
+                base_url=settings.goes_url,
+                source_dir=settings.source_dir / RAW_SOURCE_LIGHTNING,
+                raw_dir=settings.raw_dir / RAW_SOURCE_LIGHTNING,
+                raw_history=settings.raw_history,
+                progress_callback=lambda payload: self._update_raw_download_status(
+                    RAW_SOURCE_LIGHTNING, payload
                 ),
             ),
         }
@@ -277,7 +289,7 @@ class GoesTimelapseService:
 
     def downloads_snapshot(self) -> dict[str, object]:
         sources = []
-        for source_key in (RAW_SOURCE_VISIBLE, RAW_SOURCE_INFRARED):
+        for source_key in (RAW_SOURCE_VISIBLE, RAW_SOURCE_INFRARED, RAW_SOURCE_LIGHTNING):
             status = self._download_status[source_key]
             files = self._raw_files_for_source(source_key)
             sources.append(
@@ -587,6 +599,13 @@ class GoesTimelapseService:
                 should_download=False,
                 reason="Nenhum município acompanhado",
             ),
+            DownloadSourcePlan(
+                source_key=RAW_SOURCE_LIGHTNING,
+                source_label=RAW_SOURCE_LABELS[RAW_SOURCE_LIGHTNING],
+                tracked_area_ids=visible_ids,
+                should_download=False,
+                reason="Nenhum município acompanhado",
+            ),
         ]
 
         if not visible_ids:
@@ -639,6 +658,17 @@ class GoesTimelapseService:
                 else "Aguardando noite ou transição do amanhecer/entardecer"
             ),
         )
+        plans[2] = DownloadSourcePlan(
+            source_key=RAW_SOURCE_LIGHTNING,
+            source_label=RAW_SOURCE_LABELS[RAW_SOURCE_LIGHTNING],
+            tracked_area_ids=visible_ids,
+            should_download=bool(visible_ids),
+            reason=(
+                "Ativo sempre que houver municípios acompanhados"
+                if visible_ids
+                else "Nenhum município acompanhado"
+            ),
+        )
         return plans
 
     def _resolve_area_centroid(self, area: AreaCatalogEntry) -> tuple[float, float]:
@@ -651,6 +681,7 @@ class GoesTimelapseService:
 
     def _build_frame_specs(self, area: AreaCatalogEntry) -> list[FrameSpec]:
         source_paths = self._available_raw_paths_by_source()
+        lightning_points_by_timestamp = self._available_lightning_points_by_timestamp()
         timestamps = sorted(
             {
                 *source_paths[RAW_SOURCE_VISIBLE].keys(),
@@ -678,6 +709,7 @@ class GoesTimelapseService:
                         primary_path=infrared_path,
                         blend_path=visible_path,
                         blend_alpha=sunrise_alpha,
+                        lightning_points=lightning_points_by_timestamp.get(timestamp, ()),
                     )
                 )
                 if len(frame_specs_desc) >= self.settings.frame_count:
@@ -695,6 +727,7 @@ class GoesTimelapseService:
                         primary_path=visible_path,
                         blend_path=infrared_path,
                         blend_alpha=sunset_alpha,
+                        lightning_points=lightning_points_by_timestamp.get(timestamp, ()),
                     )
                 )
                 if len(frame_specs_desc) >= self.settings.frame_count:
@@ -715,6 +748,7 @@ class GoesTimelapseService:
                 FrameSpec(
                     timestamp=timestamp,
                     primary_path=primary_path,
+                    lightning_points=lightning_points_by_timestamp.get(timestamp, ()),
                 )
             )
             if len(frame_specs_desc) >= self.settings.frame_count:
@@ -867,7 +901,11 @@ class GoesTimelapseService:
 
     def _raw_files_for_source(self, source_key: str) -> list[dict[str, object]]:
         raw_dir = self._raw_dir_for_source(source_key)
-        files = sorted(self._raw_files_in_dir(raw_dir), key=lambda path: path.name, reverse=True)
+        files = sorted(
+            self._raw_files_in_dir(raw_dir, source_key),
+            key=lambda path: path.name,
+            reverse=True,
+        )
         entries = []
         for file_path in files:
             stat = file_path.stat()
@@ -889,7 +927,7 @@ class GoesTimelapseService:
 
     def _available_raw_paths_by_source(self) -> dict[str, dict[str, Path]]:
         paths_by_source: dict[str, dict[str, Path]] = {}
-        for source_key in self._downloaders:
+        for source_key in (RAW_SOURCE_VISIBLE, RAW_SOURCE_INFRARED):
             entries: dict[str, Path] = {}
             for path in self._raw_dir_for_source(source_key).glob("*.tif"):
                 if not self._is_valid_raw(path):
@@ -897,6 +935,33 @@ class GoesTimelapseService:
                 entries[parse_goes_timestamp(path.name)] = path
             paths_by_source[source_key] = entries
         return paths_by_source
+
+    def _available_lightning_points_by_timestamp(
+        self,
+    ) -> dict[str, tuple[tuple[float, float], ...]]:
+        points_by_timestamp: dict[str, tuple[tuple[float, float], ...]] = {}
+        for path in self._raw_dir_for_source(RAW_SOURCE_LIGHTNING).glob("*.json"):
+            timestamp = parse_goes_timestamp(path.name)
+            if _goes_timestamp_to_datetime(timestamp) is None:
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                LOGGER.warning("Skipping invalid lightning cache file: %s", path.name)
+                continue
+            flashes = payload.get("flashes") or []
+            points: list[tuple[float, float]] = []
+            for item in flashes:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    longitude = float(item["lon"])
+                    latitude = float(item["lat"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                points.append((longitude, latitude))
+            points_by_timestamp[timestamp] = tuple(points)
+        return points_by_timestamp
 
     def _required_sources_for_timestamp(
         self,
@@ -910,6 +975,7 @@ class GoesTimelapseService:
 
         visible_path = source_paths[RAW_SOURCE_VISIBLE].get(timestamp)
         infrared_path = source_paths[RAW_SOURCE_INFRARED].get(timestamp)
+        lightning_path = source_paths.get(RAW_SOURCE_LIGHTNING, {}).get(timestamp)
         required_sources: set[str] = set()
 
         for area in area_entries:
@@ -934,6 +1000,9 @@ class GoesTimelapseService:
                 elif visible_path is not None:
                     required_sources.add(RAW_SOURCE_VISIBLE)
 
+        if lightning_path is not None and required_sources:
+            required_sources.add(RAW_SOURCE_LIGHTNING)
+
         return required_sources
 
     def _build_global_raw_keep_set(self) -> dict[str, set[str]]:
@@ -950,6 +1019,11 @@ class GoesTimelapseService:
             },
             reverse=True,
         )
+        source_paths[RAW_SOURCE_LIGHTNING] = {
+            parse_goes_timestamp(path.name): path
+            for path in self._raw_dir_for_source(RAW_SOURCE_LIGHTNING).glob("*.json")
+            if _goes_timestamp_to_datetime(parse_goes_timestamp(path.name)) is not None
+        }
         keep_by_source = {source_key: set() for source_key in self._downloaders}
         kept_timestamps = 0
 
@@ -976,17 +1050,17 @@ class GoesTimelapseService:
         for source_key in self._downloaders:
             raw_dir = self._raw_dir_for_source(source_key)
             keep_raws = keep_by_source[source_key]
-            for file_path in raw_dir.glob("*.tif"):
+            for file_path in self._raw_files_in_dir(raw_dir, source_key):
                 if file_path.name not in keep_raws:
                     file_path.unlink(missing_ok=True)
 
             source_dir = self.settings.source_dir / source_key
             for file_path in source_dir.glob("*.nc"):
-                if _output_name_for_source_file(file_path.name) not in keep_raws:
+                if self._downloaders[source_key].output_filename(file_path.name) not in keep_raws:
                     file_path.unlink(missing_ok=True)
             for file_path in source_dir.glob("*.nc.part"):
                 source_name = file_path.name.removesuffix(".part")
-                if _output_name_for_source_file(source_name) not in keep_raws:
+                if self._downloaders[source_key].output_filename(source_name) not in keep_raws:
                     file_path.unlink(missing_ok=True)
 
         retained_files = [
@@ -997,8 +1071,11 @@ class GoesTimelapseService:
         return self._latest_kept_timestamp(retained_files)
 
     @staticmethod
-    def _raw_files_in_dir(raw_dir: Path) -> list[Path]:
-        files = list(raw_dir.glob("*.tif"))
+    def _raw_files_in_dir(raw_dir: Path, source_key: str) -> list[Path]:
+        if source_key == RAW_SOURCE_LIGHTNING:
+            files = list(raw_dir.glob("*.json"))
+        else:
+            files = list(raw_dir.glob("*.tif"))
         if files:
             return files
         return list(raw_dir.glob("*.nc"))
