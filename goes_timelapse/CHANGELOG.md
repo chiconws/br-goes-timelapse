@@ -1,5 +1,12 @@
 # Histórico de mudanças
 
+## 1.1.1
+
+- Passa a dirigir download, retenção e render pela timeline útil do GIF, evitando baixar raws fora da janela realmente usada pela animação.
+- Move o banco de estado para `state_dir`, endurece o SQLite contra `disk I/O error` e usa `scratch_dir` mais seguro por padrão para reduzir pressão de RAM.
+- Simplifica a UI do marcador para um único campo `latitude, longitude`, melhora os erros inline e deixa o estágio de conversão mais claro no painel.
+- Atualiza a documentação com compatibilidade de arquitetura, diretórios recomendados e consumo estimado de rede.
+
 ## 1.1.0
 
 - Adiciona um ponto opcional por município, configurável no card do add-on, para marcar uma coordenada específica dentro do polígono.

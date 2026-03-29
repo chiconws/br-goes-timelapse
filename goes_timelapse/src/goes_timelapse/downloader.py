@@ -33,7 +33,7 @@ LOOKBACK_HOURS = 4
 REQUEST_HEADERS = {
     "Accept-Encoding": "identity",
     "Connection": "close",
-    "User-Agent": "br-goes-timelapse/1.1.0",
+    "User-Agent": "br-goes-timelapse/1.1.1",
 }
 LISTING_TIMEOUT = aiohttp.ClientTimeout(total=45, connect=15, sock_connect=15, sock_read=20)
 DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=None, connect=30, sock_connect=30, sock_read=900)
