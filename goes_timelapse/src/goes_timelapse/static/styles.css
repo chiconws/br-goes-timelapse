@@ -527,8 +527,21 @@ h1 {
   font: inherit;
 }
 
+.marker-field input[aria-invalid="true"] {
+  border-color: rgba(191, 42, 42, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(191, 42, 42, 0.14);
+}
+
 .marker-field input::placeholder {
   color: var(--muted);
+}
+
+.marker-editor-error {
+  margin: 0;
+  color: #7f1717;
+  font-size: 0.88rem;
+  font-weight: 600;
+  line-height: 1.4;
 }
 
 .marker-editor-actions {
@@ -684,6 +697,14 @@ h1 {
   height: 100%;
   border-radius: 999px;
   background: linear-gradient(90deg, #d94f3d 0%, #ef8d46 100%);
+}
+
+.progress-bar[data-stage="queued"] span {
+  background: linear-gradient(90deg, #8f7d59 0%, #c7ad6c 100%);
+}
+
+.progress-bar[data-stage="converting"] span {
+  background: linear-gradient(90deg, #2f79d8 0%, #55b3ff 100%);
 }
 
 .raw-file-list {

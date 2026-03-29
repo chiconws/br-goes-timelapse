@@ -17,6 +17,8 @@
     downloadsSignature: "",
     statusSignature: "",
     queuedHelperSignature: "",
+    markerDrafts: {},
+    markerErrors: {},
     pendingPins: {},
     searchRequestId: 0,
     searchTimer: null,
@@ -54,6 +56,7 @@
     elements.themeToggle.addEventListener("click", onThemeToggleClick);
     elements.searchResults.addEventListener("click", onSearchResultClick);
     elements.trackedList.addEventListener("click", onTrackedActionClick);
+    elements.trackedList.addEventListener("input", onTrackedInputChange);
 
     refreshDashboard();
   });
@@ -139,6 +142,23 @@
     if (action === "remove-marker") {
       removeMarker(areaId, button);
     }
+  }
+
+  function onTrackedInputChange(event) {
+    var input = findActionNode(event.target, "data-marker-field", elements.trackedList);
+    var areaId;
+
+    if (!input || input.getAttribute("data-marker-field") !== "coordinates") {
+      return;
+    }
+
+    areaId = input.getAttribute("data-area-id");
+    if (!areaId) {
+      return;
+    }
+
+    state.markerDrafts[areaId] = input.value;
+    delete state.markerErrors[areaId];
   }
 
   function loadStatus() {
@@ -301,15 +321,28 @@
 
   function saveMarker(areaId, button) {
     var editor = button.closest(".marker-editor");
-    var latInput = editor ? editor.querySelector('[data-marker-field="lat"]') : null;
-    var lonInput = editor ? editor.querySelector('[data-marker-field="lon"]') : null;
-    var lat = latInput ? Number(latInput.value) : NaN;
-    var lon = lonInput ? Number(lonInput.value) : NaN;
+    var coordinatesInput = editor ? editor.querySelector('[data-marker-field="coordinates"]') : null;
+    var parsedCoordinates = parseMarkerCoordinates(coordinatesInput ? coordinatesInput.value : "");
+    var lat = parsedCoordinates ? parsedCoordinates.lat : NaN;
+    var lon = parsedCoordinates ? parsedCoordinates.lon : NaN;
 
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-      setFeedback("error", "Informe latitude e longitude válidas.");
+    if (!parsedCoordinates) {
+      state.markerErrors[areaId] = "Informe as coordenadas no formato latitude, longitude";
+      renderTracked();
+      setFeedback("error", state.markerErrors[areaId]);
       return;
     }
+
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+      state.markerErrors[areaId] =
+        "Informe coordenadas válidas dentro das faixas de latitude e longitude";
+      renderTracked();
+      setFeedback("error", state.markerErrors[areaId]);
+      return;
+    }
+
+    state.markerDrafts[areaId] = formatMarkerCoordinates(lat, lon);
+    delete state.markerErrors[areaId];
 
     if (button) {
       button.disabled = true;
@@ -321,7 +354,14 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ lat: lat, lon: lon }),
     })
-      .then(function () {
+      .then(function (payload) {
+        if (payload && payload.marker_lat !== null && payload.marker_lat !== undefined &&
+            payload.marker_lon !== null && payload.marker_lon !== undefined) {
+          state.markerDrafts[areaId] = formatMarkerCoordinates(payload.marker_lat, payload.marker_lon);
+        } else {
+          delete state.markerDrafts[areaId];
+        }
+        delete state.markerErrors[areaId];
         setFeedback("success", "Ponto salvo no município.");
         return Promise.all([loadTracked(), loadStatus()]);
       })
@@ -329,6 +369,8 @@
         if (button) {
           button.disabled = false;
         }
+        state.markerErrors[areaId] = error.message || "Não foi possível salvar o ponto.";
+        renderTracked();
         setFeedback("error", error.message || "Não foi possível salvar o ponto.");
       });
   }
@@ -343,6 +385,8 @@
       method: "DELETE",
     })
       .then(function () {
+        delete state.markerDrafts[areaId];
+        delete state.markerErrors[areaId];
         setFeedback("success", "Ponto removido.");
         return Promise.all([loadTracked(), loadStatus()]);
       })
@@ -485,15 +529,18 @@
   function renderDownloads() {
     var markup = [];
     var index;
+    var visibleDownloads = state.downloads.filter(function (source) {
+      return String(source.source_key || "") !== "lightning";
+    });
 
-    if (!state.downloads.length) {
+    if (!visibleDownloads.length) {
       elements.downloadsList.innerHTML =
         '<p class="empty-state">Nenhuma fonte raw disponível.</p>';
       return;
     }
 
-    for (index = 0; index < state.downloads.length; index += 1) {
-      markup.push(renderDownloadSourceCard(state.downloads[index]));
+    for (index = 0; index < visibleDownloads.length; index += 1) {
+      markup.push(renderDownloadSourceCard(visibleDownloads[index]));
     }
 
     elements.downloadsList.innerHTML = markup.join("");
@@ -579,11 +626,14 @@
   function renderActiveDownload(item) {
     var fileLabel = describeRawFile(item.filename || "");
     var stage = String(item.stage || "downloading");
+    var queued = stage === "queued";
     var converting = stage === "converting";
-    var percent = converting ? 100 : item.percent;
+    var percent = converting || queued ? 100 : item.percent;
     var width = percent === null || percent === undefined ? 4 : Math.max(4, Math.min(100, percent));
     var progressText = converting
       ? escapeHtml(formatBytes(item.total_bytes || item.downloaded_bytes || 0)) + " • Convertendo"
+      : queued
+      ? escapeHtml(formatBytes(item.total_bytes || item.downloaded_bytes || 0)) + " • Na fila de conversão"
       : escapeHtml(formatBytes(item.downloaded_bytes || 0)) +
         " / " +
         escapeHtml(item.total_bytes ? formatBytes(item.total_bytes) : "tamanho desconhecido") +
@@ -603,7 +653,9 @@
       progressText +
       "</span>" +
       "</div>" +
-      '<div class="progress-bar"><span style="width:' +
+      '<div class="progress-bar" data-stage="' +
+      escapeHtml(stage) +
+      '"><span style="width:' +
       escapeHtml(String(width)) +
       '%"></span></div>' +
       "</div>"
@@ -717,30 +769,36 @@
   function renderMarkerEditor(area) {
     var hasMarker = area.marker_lat !== null && area.marker_lat !== undefined &&
       area.marker_lon !== null && area.marker_lon !== undefined;
-    var latValue = hasMarker ? String(area.marker_lat) : "";
-    var lonValue = hasMarker ? String(area.marker_lon) : "";
+    var draftValue = state.markerDrafts[area.area_id];
+    var fieldValue = draftValue !== undefined
+      ? draftValue
+      : hasMarker
+      ? formatMarkerCoordinates(area.marker_lat, area.marker_lon)
+      : "";
+    var errorMessage = state.markerErrors[area.area_id] || "";
 
     return (
       '<section class="marker-editor">' +
       '<div class="marker-editor-copy">' +
       '<strong class="marker-editor-title">Ponto opcional no município</strong>' +
       '<span class="marker-editor-note">' +
-      escapeHtml(hasMarker ? "Ponto salvo. Você pode atualizar ou remover." : "Informe latitude e longitude para marcar um ponto no timelapse.") +
+      escapeHtml(hasMarker ? "Ponto salvo. Você pode atualizar ou remover." : "Informe coordenadas no formato latitude, longitude.") +
       "</span>" +
       "</div>" +
       '<div class="marker-editor-fields">' +
       '<label class="marker-field">' +
-      "<span>Latitude</span>" +
-      '<input type="number" step="0.000001" inputmode="decimal" data-marker-field="lat" value="' +
-      escapeHtml(latValue) +
-      '" placeholder="-20.3774" />' +
+      "<span>Coordenadas</span>" +
+      '<input type="text" inputmode="decimal" data-marker-field="coordinates" data-area-id="' +
+      escapeHtml(area.area_id) +
+      '" value="' +
+      escapeHtml(fieldValue) +
+      '" placeholder="-12.345678, -45.678901"' +
+      (errorMessage ? ' aria-invalid="true"' : "") +
+      " />" +
       "</label>" +
-      '<label class="marker-field">' +
-      "<span>Longitude</span>" +
-      '<input type="number" step="0.000001" inputmode="decimal" data-marker-field="lon" value="' +
-      escapeHtml(lonValue) +
-      '" placeholder="-40.2976" />' +
-      "</label>" +
+      (errorMessage
+        ? '<p class="marker-editor-error">' + escapeHtml(errorMessage) + "</p>"
+        : "") +
       "</div>" +
       '<div class="marker-editor-actions">' +
       '<button class="marker-save" type="button" data-action="save-marker" data-area-id="' +
@@ -768,6 +826,34 @@
     elements.searchFeedback.hidden = true;
     elements.searchFeedback.removeAttribute("data-tone");
     elements.searchFeedback.textContent = "";
+  }
+
+  function parseMarkerCoordinates(value) {
+    var raw = String(value || "").trim();
+    var parts;
+    var lat;
+    var lon;
+
+    if (!raw) {
+      return null;
+    }
+
+    parts = raw.split(",");
+    if (parts.length !== 2) {
+      return null;
+    }
+
+    lat = Number(parts[0].trim());
+    lon = Number(parts[1].trim());
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      return null;
+    }
+
+    return { lat: lat, lon: lon };
+  }
+
+  function formatMarkerCoordinates(lat, lon) {
+    return String(lat) + ", " + String(lon);
   }
 
   function fetchJson(path, options) {
