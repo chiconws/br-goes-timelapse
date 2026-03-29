@@ -112,7 +112,12 @@ class GoesDownloader:
         keys = sorted(set(keys), key=lambda item: item[0], reverse=True)
         return [filename for _, filename in keys]
 
-    async def refresh_latest(self, *, download_missing: bool = True) -> DownloadReport:
+    async def refresh_latest(
+        self,
+        *,
+        download_missing: bool = True,
+        target_timestamps: tuple[str, ...] | None = None,
+    ) -> DownloadReport:
         connector = aiohttp.TCPConnector(
             limit=DOWNLOAD_CONCURRENCY,
             force_close=True,
@@ -134,18 +139,24 @@ class GoesDownloader:
                     err,
                 )
 
-            target_history = self._target_history()
-            candidate_sources = source_filenames[:target_history]
+            candidate_sources = self._candidate_source_filenames(
+                source_filenames,
+                target_timestamps=target_timestamps,
+            )
             candidate_outputs = [
                 self.output_filename(filename) for filename in candidate_sources
             ]
+            latest_available = self._latest_available_output(
+                source_filenames,
+                target_timestamps=target_timestamps,
+            )
             self._emit_progress(
                 phase="downloading" if download_missing and candidate_outputs else "idle",
                 attempted_count=len(candidate_outputs),
                 completed_count=0,
                 failed_count=0,
                 active_count=0,
-                latest_available=candidate_outputs[0] if candidate_outputs else None,
+                latest_available=latest_available,
                 current_file=None,
                 last_downloaded=None,
             )
@@ -157,18 +168,18 @@ class GoesDownloader:
                     attempted_count=0,
                     failed_count=0,
                     last_downloaded=None,
-                    latest_available=candidate_outputs[0] if candidate_outputs else None,
+                    latest_available=latest_available,
                     failed_files=[],
                 )
 
             download_semaphore = asyncio.Semaphore(DOWNLOAD_CONCURRENCY)
-            convert_semaphore = asyncio.Semaphore(CONVERT_CONCURRENCY)
-
             completed_count = 0
             failed_files: list[str] = []
             last_downloaded: str | None = None
             active_downloads: dict[str, dict[str, object]] = {}
             progress_lock = asyncio.Lock()
+            ready_for_conversion: dict[int, tuple[str, str, Path | None]] = {}
+            ready_for_conversion_event = asyncio.Event()
 
             def current_phase() -> str:
                 if any(
@@ -215,7 +226,7 @@ class GoesDownloader:
                         completed_count=completed_count,
                         failed_count=len(failed_files),
                         active_count=len(active_downloads),
-                        latest_available=candidate_outputs[0] if candidate_outputs else None,
+                        latest_available=latest_available,
                         current_file=filename,
                         last_downloaded=last_downloaded,
                         active_downloads=sorted(
@@ -240,7 +251,7 @@ class GoesDownloader:
                         completed_count=completed_count,
                         failed_count=len(failed_files),
                         active_count=len(active_downloads),
-                        latest_available=candidate_outputs[0] if candidate_outputs else None,
+                        latest_available=latest_available,
                         current_file=filename,
                         last_downloaded=last_downloaded,
                         active_downloads=sorted(
@@ -266,7 +277,20 @@ class GoesDownloader:
                     percent=percent,
                 )
 
-            async def download(source_filename: str) -> int:
+            async def _mark_ready_for_conversion(
+                source_index: int,
+                source_filename: str,
+                output_filename: str,
+                source_path: Path | None,
+            ) -> None:
+                ready_for_conversion[source_index] = (
+                    source_filename,
+                    output_filename,
+                    source_path,
+                )
+                ready_for_conversion_event.set()
+
+            async def download(source_index: int, source_filename: str) -> None:
                 output_filename = self._converter.output_filename(source_filename)
                 await upsert_active_download(filename=output_filename, stage="downloading")
                 try:
@@ -278,40 +302,81 @@ class GoesDownloader:
                         )
                     if source_path is None:
                         await complete_active_download(filename=output_filename)
-                        return 0
+                        await _mark_ready_for_conversion(
+                            source_index,
+                            source_filename,
+                            output_filename,
+                            None,
+                        )
+                        return
 
                     await upsert_active_download(
                         filename=output_filename,
-                        stage="converting",
+                        stage="queued",
                     )
-                    async with convert_semaphore:
-                        converted = await self._convert_source_to_tiff(
-                            source_filename,
-                            source_path,
-                        )
-                    await complete_active_download(
-                        filename=output_filename,
-                        last_downloaded_name=output_filename if converted else None,
+                    await _mark_ready_for_conversion(
+                        source_index,
+                        source_filename,
+                        output_filename,
+                        source_path,
                     )
-                    return converted
                 except Exception as err:
                     failed_files.append(output_filename)
                     LOGGER.warning("Failed to download %s: %s", source_filename, err)
                     await complete_active_download(filename=output_filename)
-                    return 0
+                    await _mark_ready_for_conversion(
+                        source_index,
+                        source_filename,
+                        output_filename,
+                        None,
+                    )
 
-            results = await asyncio.gather(*(download(name) for name in candidate_sources))
+            download_tasks = [
+                asyncio.create_task(download(index, name))
+                for index, name in enumerate(candidate_sources)
+            ]
 
-        kept_files = self._kept_raws_on_disk()
-        return DownloadReport(
-            kept_files=kept_files,
-            downloaded_count=sum(results),
-            attempted_count=len(candidate_outputs),
-            failed_count=len(failed_files),
-            last_downloaded=last_downloaded,
-            latest_available=candidate_outputs[0] if candidate_outputs else None,
-            failed_files=failed_files,
-        )
+            downloaded_count = 0
+            for index in range(len(candidate_sources)):
+                while index not in ready_for_conversion:
+                    await ready_for_conversion_event.wait()
+                    ready_for_conversion_event.clear()
+
+                source_filename, output_filename, source_path = ready_for_conversion.pop(index)
+                if source_path is None:
+                    continue
+
+                await upsert_active_download(
+                    filename=output_filename,
+                    stage="converting",
+                )
+                try:
+                    converted = await self._convert_source_to_tiff(
+                        source_filename,
+                        source_path,
+                    )
+                    downloaded_count += converted
+                    await complete_active_download(
+                        filename=output_filename,
+                        last_downloaded_name=output_filename if converted else None,
+                    )
+                except Exception as err:
+                    failed_files.append(output_filename)
+                    LOGGER.warning("Failed to convert %s: %s", source_filename, err)
+                    await complete_active_download(filename=output_filename)
+
+            await asyncio.gather(*download_tasks)
+
+            kept_files = self._kept_raws_on_disk()
+            return DownloadReport(
+                kept_files=kept_files,
+                downloaded_count=downloaded_count,
+                attempted_count=len(candidate_outputs),
+                failed_count=len(failed_files),
+                last_downloaded=last_downloaded,
+                latest_available=latest_available,
+                failed_files=failed_files,
+            )
 
     async def _fetch_listing(self, session: aiohttp.ClientSession) -> list[str]:
         collected: set[str] = set()
@@ -453,6 +518,36 @@ class GoesDownloader:
             return self._raw_history
         return min(self._raw_history, BOOTSTRAP_RAW_HISTORY)
 
+    def _candidate_source_filenames(
+        self,
+        source_filenames: list[str],
+        *,
+        target_timestamps: tuple[str, ...] | None,
+    ) -> list[str]:
+        if target_timestamps is None:
+            return source_filenames[: self._target_history()]
+        target_set = set(target_timestamps)
+        return [
+            filename
+            for filename in source_filenames
+            if _slot_timestamp_for_output_filename(self.output_filename(filename)) in target_set
+        ]
+
+    def _latest_available_output(
+        self,
+        source_filenames: list[str],
+        *,
+        target_timestamps: tuple[str, ...] | None,
+    ) -> str | None:
+        if target_timestamps is None:
+            return self.output_filename(source_filenames[0]) if source_filenames else None
+        target_set = set(target_timestamps)
+        for filename in source_filenames:
+            output_filename = self.output_filename(filename)
+            if _slot_timestamp_for_output_filename(output_filename) in target_set:
+                return output_filename
+        return None
+
     def _cached_source_filenames_from_disk(self) -> list[str]:
         return sorted(
             (
@@ -542,7 +637,12 @@ class GlmDownloader:
         keys = sorted(set(keys), key=lambda item: item[0], reverse=True)
         return [filename for _, filename in keys]
 
-    async def refresh_latest(self, *, download_missing: bool = True) -> DownloadReport:
+    async def refresh_latest(
+        self,
+        *,
+        download_missing: bool = True,
+        target_timestamps: tuple[str, ...] | None = None,
+    ) -> DownloadReport:
         connector = aiohttp.TCPConnector(
             limit=DOWNLOAD_CONCURRENCY,
             force_close=True,
@@ -553,7 +653,10 @@ class GlmDownloader:
             headers=REQUEST_HEADERS,
         ) as session:
             source_filenames = await self._fetch_listing(session)
-            candidate_sources, latest_slot_output = self._candidate_source_filenames(source_filenames)
+            candidate_sources, latest_slot_output = self._candidate_source_filenames(
+                source_filenames,
+                target_timestamps=target_timestamps,
+            )
             self._emit_progress(
                 phase="downloading" if download_missing and candidate_sources else "idle",
                 attempted_count=len(candidate_sources),
@@ -578,13 +681,13 @@ class GlmDownloader:
                 )
 
             download_semaphore = asyncio.Semaphore(DOWNLOAD_CONCURRENCY)
-            convert_semaphore = asyncio.Semaphore(CONVERT_CONCURRENCY)
-
             completed_count = 0
             failed_files: list[str] = []
             last_downloaded: str | None = None
             active_downloads: dict[str, dict[str, object]] = {}
             progress_lock = asyncio.Lock()
+            ready_for_conversion: dict[int, tuple[str, str, Path | None]] = {}
+            ready_for_conversion_event = asyncio.Event()
 
             def current_phase() -> str:
                 if any(
@@ -684,7 +787,20 @@ class GlmDownloader:
                     percent=percent,
                 )
 
-            async def download(filename: str) -> int:
+            async def _mark_ready_for_conversion(
+                source_index: int,
+                source_filename: str,
+                slot_output: str,
+                source_path: Path | None,
+            ) -> None:
+                ready_for_conversion[source_index] = (
+                    source_filename,
+                    slot_output,
+                    source_path,
+                )
+                ready_for_conversion_event.set()
+
+            async def download(source_index: int, filename: str) -> None:
                 slot_output = self.output_filename(filename)
                 await upsert_active_download(filename=filename, stage="downloading")
                 try:
@@ -696,28 +812,66 @@ class GlmDownloader:
                         )
                     if source_path is None:
                         await complete_active_download(filename=filename)
-                        return 0
+                        await _mark_ready_for_conversion(
+                            source_index,
+                            filename,
+                            slot_output,
+                            None,
+                        )
+                        return
 
-                    await upsert_active_download(filename=filename, stage="converting")
-                    async with convert_semaphore:
-                        processed = await self._merge_source_into_slot(filename, source_path)
-                    await complete_active_download(
-                        filename=filename,
-                        last_downloaded_name=slot_output if processed else None,
+                    await upsert_active_download(filename=filename, stage="queued")
+                    await _mark_ready_for_conversion(
+                        source_index,
+                        filename,
+                        slot_output,
+                        source_path,
                     )
-                    return processed
                 except Exception as err:
                     failed_files.append(filename)
                     LOGGER.warning("Failed to download %s: %s", filename, err)
                     await complete_active_download(filename=filename)
-                    return 0
+                    await _mark_ready_for_conversion(
+                        source_index,
+                        filename,
+                        slot_output,
+                        None,
+                    )
 
-            results = await asyncio.gather(*(download(name) for name in candidate_sources))
+            download_tasks = [
+                asyncio.create_task(download(index, name))
+                for index, name in enumerate(candidate_sources)
+            ]
+
+            downloaded_count = 0
+            for index in range(len(candidate_sources)):
+                while index not in ready_for_conversion:
+                    await ready_for_conversion_event.wait()
+                    ready_for_conversion_event.clear()
+
+                source_filename, slot_output, source_path = ready_for_conversion.pop(index)
+                if source_path is None:
+                    continue
+
+                await upsert_active_download(filename=source_filename, stage="converting")
+                try:
+                    processed = await self._merge_source_into_slot(source_filename, source_path)
+                    downloaded_count += processed
+                    await complete_active_download(
+                        filename=source_filename,
+                        last_downloaded_name=slot_output if processed else None,
+                    )
+                except Exception as err:
+                    failed_files.append(source_filename)
+                    LOGGER.warning("Failed to convert %s: %s", source_filename, err)
+                    await complete_active_download(filename=source_filename)
+
+            await asyncio.gather(*download_tasks)
 
         kept_files = self._kept_raws_on_disk()
         return DownloadReport(
             kept_files=kept_files,
-            downloaded_count=sum(results),
+            downloaded_count=downloaded_count,
             attempted_count=len(candidate_sources),
             failed_count=len(failed_files),
             last_downloaded=last_downloaded,
@@ -878,22 +1032,37 @@ class GlmDownloader:
         )
         temporary_path.replace(path)
 
-    def _candidate_source_filenames(self, source_filenames: list[str]) -> tuple[list[str], str | None]:
-        selected_slots: list[str] = []
-        selected_slot_set: set[str] = set()
+    def _candidate_source_filenames(
+        self,
+        source_filenames: list[str],
+        *,
+        target_timestamps: tuple[str, ...] | None,
+    ) -> tuple[list[str], str | None]:
+        selected_slots: list[str]
+        selected_slot_set: set[str]
+        if target_timestamps is None:
+            selected_slots = []
+            selected_slot_set = set()
+            target_history = self._target_history()
+        else:
+            selected_slots = list(target_timestamps)
+            selected_slot_set = set(selected_slots)
+            target_history = len(selected_slots)
+
         candidate_sources: list[str] = []
         processed_by_slot: dict[str, set[str]] = {}
-        target_history = self._target_history()
 
         for filename in source_filenames:
             slot_timestamp = self._slot_timestamp_for_source(filename)
             if slot_timestamp is None:
                 continue
-            if slot_timestamp not in selected_slot_set:
+            if target_timestamps is None and slot_timestamp not in selected_slot_set:
                 if len(selected_slots) >= target_history:
                     break
                 selected_slots.append(slot_timestamp)
                 selected_slot_set.add(slot_timestamp)
+            elif target_timestamps is not None and slot_timestamp not in selected_slot_set:
+                continue
             processed = processed_by_slot.get(slot_timestamp)
             if processed is None:
                 record = self._load_slot_record(self._raw_dir / f"{slot_timestamp}_glm.json")
@@ -903,11 +1072,19 @@ class GlmDownloader:
                 continue
             candidate_sources.append(filename)
 
-        latest_slot_output = (
-            f"{selected_slots[0]}_glm.json"
-            if selected_slots
-            else None
-        )
+        latest_slot_output = None
+        if selected_slots:
+            if target_timestamps is None:
+                latest_slot_output = f"{selected_slots[0]}_glm.json"
+            else:
+                available_slots = {
+                    self._slot_timestamp_for_source(filename)
+                    for filename in source_filenames
+                }
+                for slot_timestamp in selected_slots:
+                    if slot_timestamp in available_slots:
+                        latest_slot_output = f"{slot_timestamp}_glm.json"
+                        break
         return candidate_sources, latest_slot_output
 
     def _target_history(self) -> int:
@@ -985,6 +1162,13 @@ def _filename_timestamp_or_min(filename: str) -> datetime:
 
 def _datetime_to_slot_timestamp(moment: datetime) -> str:
     return moment.strftime("%Y%j%H%M")
+
+
+def _slot_timestamp_for_output_filename(filename: str) -> str | None:
+    timestamp = _filename_timestamp(filename)
+    if timestamp is not None:
+        return _datetime_to_slot_timestamp(_floor_to_slot(timestamp))
+    return parse_goes_slot_prefix(filename)
 
 
 def parse_goes_slot_prefix(filename: str) -> str | None:

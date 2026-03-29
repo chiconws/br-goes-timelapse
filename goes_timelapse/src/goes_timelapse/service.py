@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sqlite3
 import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -30,6 +31,19 @@ from goes_timelapse.solar import (
     sunset_transition_alpha,
 )
 from goes_timelapse.state import StateStore
+from goes_timelapse.timeline import (
+    PHASE_INFRARED,
+    PHASE_VISIBLE,
+    PHASE_SUNRISE_BLEND,
+    PHASE_SUNSET_BLEND,
+    SOURCE_INFRARED,
+    SOURCE_LIGHTNING,
+    SOURCE_VISIBLE,
+    AreaTimelinePlan,
+    TimelineFrame,
+    datetime_to_slot_timestamp,
+    floor_to_slot,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -53,6 +67,7 @@ class DownloadSourcePlan:
     tracked_area_ids: tuple[str, ...]
     should_download: bool
     reason: str
+    target_timestamps: tuple[str, ...] = ()
 
 
 class GoesTimelapseService:
@@ -130,8 +145,9 @@ class GoesTimelapseService:
         self.settings.ensure_directories()
         self.settings.configure_runtime_environment()
         LOGGER.info(
-            "Storage configured: data_dir=%s scratch_dir=%s media_dir=%s",
+            "Storage configured: data_dir=%s state_dir=%s scratch_dir=%s media_dir=%s",
             self.settings.data_dir,
+            self.settings.state_dir,
             self.settings.scratch_dir,
             self.settings.media_dir,
         )
@@ -143,7 +159,7 @@ class GoesTimelapseService:
                 self.state_store.remove_tracked(area_id)
                 self._cleanup_area_files(area_id)
                 continue
-            self.state_store.set_status(area_id, "queued", last_error=None)
+            self._set_area_status(area_id, "queued", last_error=None)
             await self.enqueue(area_id)
         if self._start_background_tasks:
             self._tasks.append(asyncio.create_task(self._poll_loop(), name="goes-poller"))
@@ -218,7 +234,7 @@ class GoesTimelapseService:
             marker_lat=marker_lat,
             marker_lon=marker_lon,
         )
-        self.state_store.set_status(area_id, "queued", last_error=None)
+        self._set_area_status(area_id, "queued", last_error=None)
         await self.enqueue(area_id)
         updated = self.state_store.get_tracked(area_id)
         assert updated is not None
@@ -234,7 +250,7 @@ class GoesTimelapseService:
             marker_lat=None,
             marker_lon=None,
         )
-        self.state_store.set_status(area_id, "queued", last_error=None)
+        self._set_area_status(area_id, "queued", last_error=None)
         await self.enqueue(area_id)
         updated = self.state_store.get_tracked(area_id)
         assert updated is not None
@@ -270,7 +286,8 @@ class GoesTimelapseService:
         summaries = [
             source["summary"]
             for source in self.downloads_snapshot()["sources"]
-            if source["is_relevant"] or source["phase"] == "downloading"
+            if source["source_key"] != RAW_SOURCE_LIGHTNING
+            and (source["is_relevant"] or source["phase"] == "downloading")
         ]
         return {
             **self._status,
@@ -278,7 +295,7 @@ class GoesTimelapseService:
             "queue_length": self._queue.qsize(),
             "raw_frame_count": len(files),
             "raw_timestamp_count": self._raw_timestamp_count(),
-            "raw_history_limit": self.settings.raw_history,
+            "raw_history_limit": self.settings.frame_count,
             "raw_frame_latest": files[0]["label"] if files else None,
             "raw_download_summary": " | ".join(summaries) if summaries else "Nenhuma fonte ativa",
             "raw_disk_usage_bytes": raw_disk_bytes,
@@ -331,7 +348,8 @@ class GoesTimelapseService:
             self._status["last_poll_started_at"] = _utc_now()
             self._status["last_poll_error"] = None
             self._status["last_poll_new_downloads"] = 0
-            plans = await self._build_download_plans()
+            reference_moment = self._timeline_reference_moment()
+            plans = await self._build_download_plans(reference_moment=reference_moment)
             error_messages: list[str] = []
             total_downloads = 0
 
@@ -345,7 +363,9 @@ class GoesTimelapseService:
 
                     report: DownloadReport | None = None
                     try:
-                        report = await self._downloaders[plan.source_key].refresh_latest()
+                        report = await self._downloaders[plan.source_key].refresh_latest(
+                            target_timestamps=plan.target_timestamps
+                        )
                     except Exception as err:
                         LOGGER.exception("Raw refresh failed for %s", plan.source_key)
                         if self._raw_files_for_source(plan.source_key):
@@ -370,7 +390,9 @@ class GoesTimelapseService:
             finally:
                 self._status["last_poll_finished_at"] = _utc_now()
 
-            latest_retained_timestamp = self._prune_raw_cache()
+            latest_retained_timestamp = self._prune_raw_cache(
+                reference_moment=reference_moment
+            )
             self._status["last_poll_new_downloads"] = total_downloads
             if error_messages:
                 self._status["last_poll_error"] = " | ".join(error_messages)
@@ -382,8 +404,26 @@ class GoesTimelapseService:
                     downloaded_count=total_downloads,
                 ):
                     continue
-                self.state_store.set_status(tracked.area_id, "queued", last_error=None)
+                self._set_area_status(tracked.area_id, "queued", last_error=None)
                 await self.enqueue(tracked.area_id)
+
+    def _set_area_status(
+        self,
+        area_id: str,
+        status: str,
+        **kwargs,
+    ) -> bool:
+        try:
+            self.state_store.set_status(area_id, status, **kwargs)
+            return True
+        except sqlite3.Error as err:
+            LOGGER.exception(
+                "Failed to persist area status for %s -> %s: %s",
+                area_id,
+                status,
+                err,
+            )
+            return False
 
     def _schedule_immediate_refresh(self) -> None:
         if self._immediate_refresh_task is not None and not self._immediate_refresh_task.done():
@@ -408,7 +448,7 @@ class GoesTimelapseService:
                     await asyncio.to_thread(self._process_area, area_id)
             except Exception:  # pragma: no cover
                 LOGGER.exception("Area processing crashed for %s", area_id)
-                self.state_store.set_status(
+                self._set_area_status(
                     area_id,
                     "error",
                     last_error="Falha inesperada no processamento",
@@ -419,7 +459,7 @@ class GoesTimelapseService:
     def _process_area(self, area_id: str) -> RenderedArea | None:
         area = self.catalog.get(area_id)
         if area is None:
-            self.state_store.set_status(area_id, "error", last_error="Área não encontrada")
+            self._set_area_status(area_id, "error", last_error="Área não encontrada")
             return None
         tracked = self.state_store.get_tracked(area_id)
         if tracked is None:
@@ -427,10 +467,10 @@ class GoesTimelapseService:
 
         frame_specs = self._build_frame_specs(area)
         if not frame_specs:
-            self.state_store.set_status(area_id, "queued", last_error=None)
+            self._set_area_status(area_id, "queued", last_error=None)
             return None
 
-        self.state_store.set_status(area_id, "processing", last_error=None)
+        self._set_area_status(area_id, "processing", last_error=None)
         try:
             geometry = self.geometry_store.load_geometry(area)
             marker_coordinates = None
@@ -443,7 +483,7 @@ class GoesTimelapseService:
                 marker_coordinates=marker_coordinates,
             )
             if not png_paths:
-                self.state_store.set_status(
+                self._set_area_status(
                     area_id, "error", last_error="Nenhum quadro foi renderizado"
                 )
                 return None
@@ -460,7 +500,7 @@ class GoesTimelapseService:
                 self._cleanup_area_files(area_id)
                 return None
 
-            self.state_store.set_status(
+            self._set_area_status(
                 area_id,
                 "ready",
                 last_error=None,
@@ -477,7 +517,7 @@ class GoesTimelapseService:
             )
         except Exception as err:
             LOGGER.exception("Failed to process %s", area_id)
-            self.state_store.set_status(area_id, "error", last_error=str(err))
+            self._set_area_status(area_id, "error", last_error=str(err))
             return None
 
     def _cleanup_area_files(self, area_id: str) -> None:
@@ -580,96 +620,179 @@ class GoesTimelapseService:
         status["completed_count"] = 0
         status["failed_count"] = 0
 
-    async def _build_download_plans(self) -> list[DownloadSourcePlan]:
-        tracked = self.state_store.list_tracked()
-        visible_ids = tuple(area.area_id for area in tracked if area.area_type == "municipio")
+    async def _build_download_plans(
+        self,
+        *,
+        reference_moment: datetime | None = None,
+    ) -> list[DownloadSourcePlan]:
+        tracked_areas = self._tracked_catalog_areas()
+        tracked_area_ids = tuple(area.area_id for area in tracked_areas)
+        reference_moment = reference_moment or self._timeline_reference_moment()
+        target_timestamps = self._build_global_target_timestamps(
+            tracked_areas,
+            reference_moment=reference_moment,
+        )
 
-        plans = [
+        return [
             DownloadSourcePlan(
                 source_key=RAW_SOURCE_VISIBLE,
                 source_label=RAW_SOURCE_LABELS[RAW_SOURCE_VISIBLE],
-                tracked_area_ids=visible_ids,
-                should_download=False,
-                reason="Nenhum município acompanhado",
+                tracked_area_ids=tracked_area_ids,
+                should_download=bool(target_timestamps[RAW_SOURCE_VISIBLE]),
+                reason=(
+                    "Ativo nos slots úteis de B2 da timeline atual"
+                    if target_timestamps[RAW_SOURCE_VISIBLE]
+                    else "Sem slots úteis de B2 na timeline atual"
+                    if tracked_area_ids
+                    else "Nenhum município acompanhado"
+                ),
+                target_timestamps=target_timestamps[RAW_SOURCE_VISIBLE],
             ),
             DownloadSourcePlan(
                 source_key=RAW_SOURCE_INFRARED,
                 source_label=RAW_SOURCE_LABELS[RAW_SOURCE_INFRARED],
-                tracked_area_ids=visible_ids,
-                should_download=False,
-                reason="Nenhum município acompanhado",
+                tracked_area_ids=tracked_area_ids,
+                should_download=bool(target_timestamps[RAW_SOURCE_INFRARED]),
+                reason=(
+                    "Ativo nos slots úteis de B13 da timeline atual"
+                    if target_timestamps[RAW_SOURCE_INFRARED]
+                    else "Sem slots úteis de B13 na timeline atual"
+                    if tracked_area_ids
+                    else "Nenhum município acompanhado"
+                ),
+                target_timestamps=target_timestamps[RAW_SOURCE_INFRARED],
             ),
             DownloadSourcePlan(
                 source_key=RAW_SOURCE_LIGHTNING,
                 source_label=RAW_SOURCE_LABELS[RAW_SOURCE_LIGHTNING],
-                tracked_area_ids=visible_ids,
-                should_download=False,
-                reason="Nenhum município acompanhado",
+                tracked_area_ids=tracked_area_ids,
+                should_download=bool(target_timestamps[RAW_SOURCE_LIGHTNING]),
+                reason=(
+                    "Ativo nos slots úteis de descargas da timeline atual"
+                    if target_timestamps[RAW_SOURCE_LIGHTNING]
+                    else "Sem slots úteis na timeline atual"
+                    if tracked_area_ids
+                    else "Nenhum município acompanhado"
+                ),
+                target_timestamps=target_timestamps[RAW_SOURCE_LIGHTNING],
             ),
         ]
 
-        if not visible_ids:
-            return plans
+    def _tracked_catalog_areas(self) -> list[AreaCatalogEntry]:
+        return [
+            area
+            for tracked in self.state_store.list_tracked()
+            if (area := self.catalog.get(tracked.area_id)) is not None
+        ]
 
-        now_utc = datetime.now(UTC)
-        visible_active = False
-        infrared_active = False
-        for area_id in visible_ids:
-            area = self.catalog.get(area_id)
-            if area is None:
+    def _timeline_reference_moment(self) -> datetime:
+        return floor_to_slot(
+            datetime.now(UTC) - timedelta(minutes=SLOT_MINUTES),
+            slot_minutes=SLOT_MINUTES,
+        )
+
+    def _build_area_timeline_plan(
+        self,
+        area: AreaCatalogEntry,
+        *,
+        reference_moment: datetime | None = None,
+    ) -> AreaTimelinePlan:
+        reference_moment = reference_moment or self._timeline_reference_moment()
+        end_slot = floor_to_slot(reference_moment, slot_minutes=SLOT_MINUTES)
+        start_slot = end_slot - timedelta(
+            minutes=SLOT_MINUTES * (self.settings.frame_count - 1)
+        )
+        frames: list[TimelineFrame] = []
+
+        for index in range(self.settings.frame_count):
+            slot_moment = start_slot + timedelta(minutes=SLOT_MINUTES * index)
+            slot_timestamp = datetime_to_slot_timestamp(slot_moment)
+            sunrise_alpha = self._sunrise_transition_alpha(area, slot_moment)
+            sunset_alpha = self._sunset_transition_alpha(area, slot_moment)
+
+            if sunrise_alpha is not None:
+                frames.append(
+                    TimelineFrame(
+                        slot_timestamp=slot_timestamp,
+                        phase=PHASE_SUNRISE_BLEND,
+                        primary_source=SOURCE_INFRARED,
+                        blend_source=SOURCE_VISIBLE,
+                        blend_alpha=sunrise_alpha,
+                        required_sources=(
+                            SOURCE_INFRARED,
+                            SOURCE_VISIBLE,
+                            SOURCE_LIGHTNING,
+                        ),
+                    )
+                )
                 continue
-            centroid = await asyncio.to_thread(self._resolve_area_centroid, area)
-            solar_window = is_within_visible_window(
-                longitude=centroid[0],
-                latitude=centroid[1],
-                moment_utc=now_utc,
-                margin_hours=self.settings.solar_margin_hours,
+
+            if sunset_alpha is not None:
+                frames.append(
+                    TimelineFrame(
+                        slot_timestamp=slot_timestamp,
+                        phase=PHASE_SUNSET_BLEND,
+                        primary_source=SOURCE_VISIBLE,
+                        blend_source=SOURCE_INFRARED,
+                        blend_alpha=sunset_alpha,
+                        required_sources=(
+                            SOURCE_VISIBLE,
+                            SOURCE_INFRARED,
+                            SOURCE_LIGHTNING,
+                        ),
+                    )
+                )
+                continue
+
+            if self._prefers_visible(area, slot_moment):
+                frames.append(
+                    TimelineFrame(
+                        slot_timestamp=slot_timestamp,
+                        phase=PHASE_VISIBLE,
+                        primary_source=SOURCE_VISIBLE,
+                        blend_source=None,
+                        blend_alpha=None,
+                        required_sources=(SOURCE_VISIBLE, SOURCE_LIGHTNING),
+                    )
+                )
+                continue
+
+            frames.append(
+                TimelineFrame(
+                    slot_timestamp=slot_timestamp,
+                    phase=PHASE_INFRARED,
+                    primary_source=SOURCE_INFRARED,
+                    blend_source=None,
+                    blend_alpha=None,
+                    required_sources=(SOURCE_INFRARED, SOURCE_LIGHTNING),
+                )
             )
-            sunrise_alpha = self._sunrise_transition_alpha(area, now_utc)
-            sunset_alpha = self._sunset_transition_alpha(area, now_utc)
 
-            if solar_window.is_open or sunrise_alpha is not None or sunset_alpha is not None:
-                visible_active = True
-            else:
-                infrared_active = True
+        return AreaTimelinePlan(area_id=area.area_id, frames=tuple(frames))
 
-            if sunrise_alpha is not None or sunset_alpha is not None:
-                infrared_active = True
+    def _build_global_target_timestamps(
+        self,
+        tracked_areas: list[AreaCatalogEntry],
+        *,
+        reference_moment: datetime | None = None,
+    ) -> dict[str, tuple[str, ...]]:
+        targets: dict[str, set[str]] = {
+            RAW_SOURCE_VISIBLE: set(),
+            RAW_SOURCE_INFRARED: set(),
+            RAW_SOURCE_LIGHTNING: set(),
+        }
+        reference_moment = reference_moment or self._timeline_reference_moment()
 
-        plans[0] = DownloadSourcePlan(
-            source_key=RAW_SOURCE_VISIBLE,
-            source_label=RAW_SOURCE_LABELS[RAW_SOURCE_VISIBLE],
-            tracked_area_ids=visible_ids,
-            should_download=visible_active,
-            reason=(
-                "Ativo entre o nascer e o pôr do sol dos municípios"
-                if visible_active
-                else "Pausado fora da janela solar dos municípios"
-            ),
-        )
-        plans[1] = DownloadSourcePlan(
-            source_key=RAW_SOURCE_INFRARED,
-            source_label=RAW_SOURCE_LABELS[RAW_SOURCE_INFRARED],
-            tracked_area_ids=visible_ids,
-            should_download=infrared_active,
-            reason=(
-                "Ativo durante a noite ou na transição do amanhecer/entardecer"
-                if infrared_active
-                else "Aguardando noite ou transição do amanhecer/entardecer"
-            ),
-        )
-        plans[2] = DownloadSourcePlan(
-            source_key=RAW_SOURCE_LIGHTNING,
-            source_label=RAW_SOURCE_LABELS[RAW_SOURCE_LIGHTNING],
-            tracked_area_ids=visible_ids,
-            should_download=bool(visible_ids),
-            reason=(
-                "Ativo sempre que houver municípios acompanhados"
-                if visible_ids
-                else "Nenhum município acompanhado"
-            ),
-        )
-        return plans
+        for area in tracked_areas:
+            plan = self._build_area_timeline_plan(area, reference_moment=reference_moment)
+            for frame in plan.frames:
+                for source_key in frame.required_sources:
+                    targets[source_key].add(frame.slot_timestamp)
+
+        return {
+            source_key: tuple(sorted(values, reverse=True))
+            for source_key, values in targets.items()
+        }
 
     def _resolve_area_centroid(self, area: AreaCatalogEntry) -> tuple[float, float]:
         cached = self._centroid_cache.get(area.area_id)
@@ -682,78 +805,64 @@ class GoesTimelapseService:
     def _build_frame_specs(self, area: AreaCatalogEntry) -> list[FrameSpec]:
         source_paths = self._available_raw_paths_by_source()
         lightning_points_by_timestamp = self._available_lightning_points_by_timestamp()
-        timestamps = sorted(
-            {
-                *source_paths[RAW_SOURCE_VISIBLE].keys(),
-                *source_paths[RAW_SOURCE_INFRARED].keys(),
-            },
-            reverse=True,
-        )
-        frame_specs_desc: list[FrameSpec] = []
-        for timestamp in timestamps:
-            moment_utc = _goes_timestamp_to_datetime(timestamp)
-            if moment_utc is None:
-                continue
+        timeline = self._build_area_timeline_plan(area)
+        frame_specs: list[FrameSpec] = []
+
+        for timeline_frame in timeline.frames:
+            timestamp = timeline_frame.slot_timestamp
             visible_path = source_paths[RAW_SOURCE_VISIBLE].get(timestamp)
             infrared_path = source_paths[RAW_SOURCE_INFRARED].get(timestamp)
-            sunrise_alpha = self._sunrise_transition_alpha(area, moment_utc)
-            sunset_alpha = self._sunset_transition_alpha(area, moment_utc)
+            lightning_points = lightning_points_by_timestamp.get(timestamp, ())
+
             if (
-                sunrise_alpha is not None
+                timeline_frame.phase == PHASE_SUNRISE_BLEND
                 and visible_path is not None
                 and infrared_path is not None
             ):
-                frame_specs_desc.append(
+                frame_specs.append(
                     FrameSpec(
                         timestamp=timestamp,
                         primary_path=infrared_path,
                         blend_path=visible_path,
-                        blend_alpha=sunrise_alpha,
-                        lightning_points=lightning_points_by_timestamp.get(timestamp, ()),
+                        blend_alpha=timeline_frame.blend_alpha or 0.0,
+                        lightning_points=lightning_points,
                     )
                 )
-                if len(frame_specs_desc) >= self.settings.frame_count:
-                    break
                 continue
 
             if (
-                sunset_alpha is not None
+                timeline_frame.phase == PHASE_SUNSET_BLEND
                 and visible_path is not None
                 and infrared_path is not None
             ):
-                frame_specs_desc.append(
+                frame_specs.append(
                     FrameSpec(
                         timestamp=timestamp,
                         primary_path=visible_path,
                         blend_path=infrared_path,
-                        blend_alpha=sunset_alpha,
-                        lightning_points=lightning_points_by_timestamp.get(timestamp, ()),
+                        blend_alpha=timeline_frame.blend_alpha or 0.0,
+                        lightning_points=lightning_points,
                     )
                 )
-                if len(frame_specs_desc) >= self.settings.frame_count:
-                    break
                 continue
 
-            prefers_visible = self._prefers_visible(area, moment_utc)
-            primary_path = (
-                visible_path
-                if prefers_visible and visible_path is not None
-                else infrared_path
-                if not prefers_visible and infrared_path is not None
-                else visible_path or infrared_path
+            primary_path = self._resolve_primary_path_for_timeline_frame(
+                timeline_frame,
+                visible_path=visible_path,
+                infrared_path=infrared_path,
             )
             if primary_path is None:
                 continue
-            frame_specs_desc.append(
+
+            frame_specs.append(
                 FrameSpec(
                     timestamp=timestamp,
                     primary_path=primary_path,
-                    lightning_points=lightning_points_by_timestamp.get(timestamp, ()),
+                    lightning_points=lightning_points,
                 )
             )
-            if len(frame_specs_desc) >= self.settings.frame_count:
-                break
-        return list(reversed(frame_specs_desc))
+
+        return frame_specs
 
     def _area_needs_reprocessing(
         self,
@@ -787,6 +896,19 @@ class GoesTimelapseService:
         if not usable:
             return None
         return max(usable)
+
+    @staticmethod
+    def _resolve_primary_path_for_timeline_frame(
+        timeline_frame,
+        *,
+        visible_path: Path | None,
+        infrared_path: Path | None,
+    ) -> Path | None:
+        if timeline_frame.primary_source == SOURCE_VISIBLE:
+            return visible_path or infrared_path
+        if timeline_frame.primary_source == SOURCE_INFRARED:
+            return infrared_path or visible_path
+        return visible_path or infrared_path
 
     def _prefers_visible(self, area: AreaCatalogEntry, moment_utc: datetime) -> bool:
         centroid = self._resolve_area_centroid(area)
@@ -1005,62 +1127,36 @@ class GoesTimelapseService:
 
         return required_sources
 
-    def _build_global_raw_keep_set(self) -> dict[str, set[str]]:
-        tracked_areas = [
-            area
-            for tracked in self.state_store.list_tracked()
-            if (area := self.catalog.get(tracked.area_id)) is not None
-        ]
-        source_paths = self._available_raw_paths_by_source()
-        timestamps = sorted(
-            {
-                *source_paths[RAW_SOURCE_VISIBLE].keys(),
-                *source_paths[RAW_SOURCE_INFRARED].keys(),
-            },
-            reverse=True,
+    def _build_global_raw_keep_set(
+        self,
+        *,
+        reference_moment: datetime | None = None,
+    ) -> dict[str, set[str]]:
+        tracked_areas = self._tracked_catalog_areas()
+        target_timestamps = self._build_global_target_timestamps(
+            tracked_areas,
+            reference_moment=reference_moment,
         )
-        source_paths[RAW_SOURCE_LIGHTNING] = {
-            parse_goes_timestamp(path.name): path
-            for path in self._raw_dir_for_source(RAW_SOURCE_LIGHTNING).glob("*.json")
-            if _goes_timestamp_to_datetime(parse_goes_timestamp(path.name)) is not None
-        }
-        keep_by_source = {source_key: set() for source_key in self._downloaders}
-        kept_timestamps = 0
+        return {source_key: set(values) for source_key, values in target_timestamps.items()}
 
-        for timestamp in timestamps:
-            required_sources = self._required_sources_for_timestamp(
-                tracked_areas,
-                timestamp,
-                source_paths,
-            )
-            if not required_sources:
-                continue
-            kept_timestamps += 1
-            for source_key in required_sources:
-                path = source_paths[source_key].get(timestamp)
-                if path is not None:
-                    keep_by_source[source_key].add(path.name)
-            if kept_timestamps >= self.settings.raw_history:
-                break
-
-        return keep_by_source
-
-    def _prune_raw_cache(self) -> str | None:
-        keep_by_source = self._build_global_raw_keep_set()
+    def _prune_raw_cache(self, *, reference_moment: datetime | None = None) -> str | None:
+        keep_by_source = self._build_global_raw_keep_set(reference_moment=reference_moment)
         for source_key in self._downloaders:
             raw_dir = self._raw_dir_for_source(source_key)
-            keep_raws = keep_by_source[source_key]
+            keep_timestamps = keep_by_source[source_key]
             for file_path in self._raw_files_in_dir(raw_dir, source_key):
-                if file_path.name not in keep_raws:
+                if parse_goes_timestamp(file_path.name) not in keep_timestamps:
                     file_path.unlink(missing_ok=True)
 
             source_dir = self.settings.source_dir / source_key
             for file_path in source_dir.glob("*.nc"):
-                if self._downloaders[source_key].output_filename(file_path.name) not in keep_raws:
+                output_name = self._downloaders[source_key].output_filename(file_path.name)
+                if parse_goes_timestamp(output_name) not in keep_timestamps:
                     file_path.unlink(missing_ok=True)
             for file_path in source_dir.glob("*.nc.part"):
                 source_name = file_path.name.removesuffix(".part")
-                if self._downloaders[source_key].output_filename(source_name) not in keep_raws:
+                output_name = self._downloaders[source_key].output_filename(source_name)
+                if parse_goes_timestamp(output_name) not in keep_timestamps:
                     file_path.unlink(missing_ok=True)
 
         retained_files = [

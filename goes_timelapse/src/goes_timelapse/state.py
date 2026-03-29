@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
 from datetime import UTC, datetime
@@ -8,21 +9,59 @@ from pathlib import Path
 from goes_timelapse.models import AreaCatalogEntry, TrackedArea
 
 
+LOGGER = logging.getLogger(__name__)
+SQLITE_BUSY_TIMEOUT_MS = 30_000
+SQLITE_CONNECT_TIMEOUT_SECONDS = 30
+RETRYABLE_SQLITE_ERRORS = (
+    "disk i/o error",
+    "database is locked",
+)
+
+
 class StateStore:
     def __init__(self, db_path: Path):
         self._db_path = db_path
         self._lock = threading.RLock()
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(db_path, check_same_thread=False)
-        self._connection.row_factory = sqlite3.Row
+        self._connection = self._connect()
         self._initialize()
 
     def close(self) -> None:
         with self._lock:
             self._connection.close()
 
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(
+            self._db_path,
+            check_same_thread=False,
+            timeout=SQLITE_CONNECT_TIMEOUT_SECONDS,
+        )
+        connection.row_factory = sqlite3.Row
+        connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+        connection.execute("PRAGMA temp_store = MEMORY")
+        try:
+            connection.execute("PRAGMA journal_mode = WAL")
+        except sqlite3.DatabaseError as err:
+            LOGGER.warning("Could not enable WAL mode for %s: %s", self._db_path, err)
+        try:
+            connection.execute("PRAGMA synchronous = NORMAL")
+        except sqlite3.DatabaseError as err:
+            LOGGER.warning(
+                "Could not relax SQLite synchronous mode for %s: %s",
+                self._db_path,
+                err,
+            )
+        return connection
+
+    def _reopen_locked(self) -> None:
+        try:
+            self._connection.close()
+        except sqlite3.Error:
+            pass
+        self._connection = self._connect()
+
     def _initialize(self) -> None:
-        with self._lock:
+        def operation() -> None:
             self._connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS tracked_areas (
@@ -47,7 +86,8 @@ class StateStore:
             )
             self._ensure_tracked_area_columns()
             self._maybe_migrate_municipality_table()
-            self._connection.commit()
+
+        self._run_write(operation)
 
     def _ensure_tracked_area_columns(self) -> None:
         existing_columns = {
@@ -145,9 +185,10 @@ class StateStore:
 
     def upsert_tracked(self, area: AreaCatalogEntry, status: str = "queued") -> None:
         now = self._now()
-        with self._lock:
-            existing = self.get_tracked(area.area_id)
-            tracked_at = existing.tracked_at if existing is not None else now
+        existing = self.get_tracked(area.area_id)
+        tracked_at = existing.tracked_at if existing is not None else now
+
+        def operation() -> None:
             self._connection.execute(
                 """
                 INSERT INTO tracked_areas (
@@ -179,12 +220,16 @@ class StateStore:
                     now,
                 ),
             )
-            self._connection.commit()
+
+        self._run_write(operation)
 
     def remove_tracked(self, area_id: str) -> None:
-        with self._lock:
-            self._connection.execute("DELETE FROM tracked_areas WHERE area_id = ?", (area_id,))
-            self._connection.commit()
+        self._run_write(
+            lambda: self._connection.execute(
+                "DELETE FROM tracked_areas WHERE area_id = ?",
+                (area_id,),
+            )
+        )
 
     def set_status(
         self,
@@ -209,12 +254,14 @@ class StateStore:
             updates["snippet_path"] = snippet_path
         assignments = ", ".join(f"{column} = :{column}" for column in updates)
         updates["area_id"] = area_id
-        with self._lock:
+
+        def operation() -> None:
             self._connection.execute(
                 f"UPDATE tracked_areas SET {assignments} WHERE area_id = :area_id",
                 updates,
             )
-            self._connection.commit()
+
+        self._run_write(operation)
 
     def set_marker(
         self,
@@ -223,8 +270,8 @@ class StateStore:
         marker_lat: float | None,
         marker_lon: float | None,
     ) -> None:
-        with self._lock:
-            self._connection.execute(
+        self._run_write(
+            lambda: self._connection.execute(
                 """
                 UPDATE tracked_areas
                 SET marker_lat = ?, marker_lon = ?, updated_at = ?
@@ -232,7 +279,30 @@ class StateStore:
                 """,
                 (marker_lat, marker_lon, self._now(), area_id),
             )
-            self._connection.commit()
+        )
+
+    def _run_write(self, operation) -> None:
+        with self._lock:
+            for attempt in range(2):
+                try:
+                    operation()
+                    self._connection.commit()
+                    return
+                except sqlite3.OperationalError as err:
+                    if attempt == 0 and self._is_retryable_operational_error(err):
+                        LOGGER.warning(
+                            "Retrying SQLite write after operational error on %s: %s",
+                            self._db_path,
+                            err,
+                        )
+                        self._reopen_locked()
+                        continue
+                    raise
+
+    @staticmethod
+    def _is_retryable_operational_error(err: sqlite3.OperationalError) -> bool:
+        message = str(err).lower()
+        return any(fragment in message for fragment in RETRYABLE_SQLITE_ERRORS)
 
     @staticmethod
     def _row_to_tracked(row: sqlite3.Row) -> TrackedArea:

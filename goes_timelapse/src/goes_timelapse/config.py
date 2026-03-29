@@ -39,6 +39,7 @@ class Settings:
     max_tracked: int
     log_level: int
     data_dir: Path
+    state_dir: Path
     scratch_dir: Path
     requested_scratch_dir: Path
     scratch_dir_warning: str | None
@@ -62,7 +63,11 @@ class Settings:
     def from_env(cls) -> "Settings":
         package_dir = Path(__file__).resolve().parent
         data_dir = _env_path("GOES_DATA_DIR", "/data/goes_timelapse")
-        requested_scratch_dir = _env_path("GOES_SCRATCH_DIR", "/dev/shm/goes_timelapse")
+        state_dir = _env_path("GOES_STATE_DIR", "/config/goes_timelapse/state")
+        requested_scratch_dir = _env_path(
+            "GOES_SCRATCH_DIR",
+            str(data_dir / "tmp"),
+        )
         scratch_dir, scratch_dir_warning = _resolve_scratch_dir(
             requested_scratch_dir,
             data_dir / "tmp",
@@ -73,7 +78,7 @@ class Settings:
         geometry_cache_dir = data_dir / "geometry"
         media_dir = _env_path("GOES_MEDIA_DIR", "/media/goes_timelapse")
         snippets_dir = _env_path("GOES_SNIPPETS_DIR", "/config/goes_timelapse/lovelace")
-        db_path = data_dir / "state.db"
+        db_path = state_dir / "state.db"
         catalog_path = _env_path(
             "GOES_CATALOG_PATH",
             str(package_dir / "assets" / "areas.json.gz"),
@@ -106,6 +111,7 @@ class Settings:
             max_tracked=_env_int("GOES_MAX_TRACKED", 5),
             log_level=log_level,
             data_dir=data_dir,
+            state_dir=state_dir,
             scratch_dir=scratch_dir,
             requested_scratch_dir=requested_scratch_dir,
             scratch_dir_warning=scratch_dir_warning,
@@ -142,6 +148,7 @@ class Settings:
     def ensure_directories(self) -> None:
         for directory in (
             self.data_dir,
+            self.state_dir,
             self.scratch_dir,
             self.source_dir,
             self.raw_dir,

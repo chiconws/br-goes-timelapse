@@ -21,7 +21,8 @@ map:
     read_only: false
 options:
   data_dir: /data/goes_timelapse
-  scratch_dir: /dev/shm/goes_timelapse
+  state_dir: /config/goes_timelapse/state
+  scratch_dir: /data/goes_timelapse/tmp
   poll_minutes: 2
   frame_count: 10
   gif_fps: 2
@@ -30,6 +31,7 @@ options:
   log_level: info
 schema:
   data_dir: str
+  state_dir: str
   scratch_dir: str
   poll_minutes: int(1,10)
   frame_count: int(6,20)

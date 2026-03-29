@@ -2,6 +2,10 @@
 set -euo pipefail
 
 export GOES_DATA_DIR="$(bashio::config 'data_dir')"
+state_dir="$(bashio::config 'state_dir')"
+if [[ -n "$state_dir" && "$state_dir" != "null" ]]; then
+  export GOES_STATE_DIR="$state_dir"
+fi
 scratch_dir="$(bashio::config 'scratch_dir')"
 if [[ -n "$scratch_dir" && "$scratch_dir" != "null" ]]; then
   export GOES_SCRATCH_DIR="$scratch_dir"
