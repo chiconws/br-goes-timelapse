@@ -5,4 +5,5 @@ numpy>=1.26,<2.0
 pillow>=11.0,<12.0
 polar2grid>=3.3,<4.0
 rasterio>=1.4,<2.0
+typing_extensions>=4.12,<5.0
 uvicorn>=0.34,<1.0

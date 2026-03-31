@@ -1,0 +1,15 @@
+{
+  "include": [
+    "goes_timelapse/src",
+    "tests",
+    "scripts"
+  ],
+  "exclude": [
+    ".git",
+    ".pytest_cache",
+    ".tmp",
+    "devtools",
+    "docs"
+  ],
+  "pythonVersion": "3.11"
+}
