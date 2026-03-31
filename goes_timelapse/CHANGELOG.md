@@ -1,5 +1,12 @@
 # Histórico de mudanças
 
+## 1.1.2
+
+- Reorganiza o código em módulos `core`, `data`, `pipeline` e `timeline`, reduzindo o acoplamento do runtime.
+- Divide o frontend em arquivos separados para estado, ações e renderização, deixando a UI mais fácil de manter.
+- Consolida a timeline útil como base interna de download, retenção e render dos frames.
+- Melhora a observabilidade e o tooling com suporte tipado melhor, configuração de `pyright` e logs do servidor menos ruidosos.
+
 ## 1.1.1
 
 - Passa a dirigir download, retenção e render pela timeline útil do GIF, evitando baixar raws fora da janela realmente usada pela animação.
