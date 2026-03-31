@@ -6,7 +6,7 @@ import re
 import unicodedata
 from pathlib import Path
 
-from goes_timelapse.models import AreaCatalogEntry, BoundaryLine
+from goes_timelapse.core.models import AreaCatalogEntry, BoundaryLine
 
 
 SUPPORTED_AREA_TYPES = frozenset({"municipio"})
@@ -30,11 +30,29 @@ def load_boundary_lines(path: Path) -> tuple[BoundaryLine, ...]:
         raw_data = json.load(handle)
     return tuple(
         BoundaryLine(
-            bounds=tuple(float(value) for value in item["bounds"]),
+            bounds=_coerce_bounds(item["bounds"]),
             line=tuple((float(lon), float(lat)) for lon, lat in item["line"]),
         )
         for item in raw_data
     )
+
+
+def _coerce_bounds(raw_bounds: object) -> tuple[float, float, float, float]:
+    if not isinstance(raw_bounds, list | tuple) or len(raw_bounds) != 4:
+        raise ValueError("Invalid boundary bounds payload")
+    left, bottom, right, top = raw_bounds
+    return (
+        _coerce_float(left),
+        _coerce_float(bottom),
+        _coerce_float(right),
+        _coerce_float(top),
+    )
+
+
+def _coerce_float(value: object) -> float:
+    if not isinstance(value, int | float | str):
+        raise ValueError("Invalid boundary coordinate")
+    return float(value)
 
 
 class AreaCatalog:

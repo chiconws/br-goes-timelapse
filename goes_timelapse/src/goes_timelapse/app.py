@@ -1,6 +1,5 @@
 from __future__ import annotations
-
-import logging
+import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -9,12 +8,13 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from goes_timelapse.catalog import AreaCatalog
-from goes_timelapse.config import Settings
-from goes_timelapse.service import GoesTimelapseService
-from goes_timelapse.state import StateStore
+from goes_timelapse.core.config import Settings
+from goes_timelapse.core.logging_utils import configure_logging
+from goes_timelapse.core.state import StateStore
+from goes_timelapse.data.catalog import AreaCatalog
+from goes_timelapse.pipeline.service import DownloadsSnapshot, GoesTimelapseService
 
-STATIC_ASSET_VERSION = "20260328-1"
+STATIC_ASSET_VERSION = "20260329-1"
 STATIC_APP_JS_ROUTE = f"/static/app-{STATIC_ASSET_VERSION}.js"
 STATIC_STYLES_ROUTE = f"/static/styles-{STATIC_ASSET_VERSION}.css"
 
@@ -30,7 +30,7 @@ def create_app(
     start_background_tasks: bool = True,
 ) -> FastAPI:
     app_settings = settings or Settings.from_env()
-    _configure_logging(app_settings.log_level)
+    configure_logging(app_settings.log_level)
     static_dir = Path(__file__).resolve().parent / "static"
     index_path = static_dir / "index.html"
     app_js_path = static_dir / "app.js"
@@ -68,6 +68,18 @@ def create_app(
         rendered_index = (
             index_template.replace("__BASE_PATH__", base_href)
             .replace("__STYLE_HREF__", f"{base_href}static/styles-{STATIC_ASSET_VERSION}.css")
+            .replace(
+                "__SCRIPT_CORE_SRC__",
+                f"{base_href}static/app-core.js?v={STATIC_ASSET_VERSION}",
+            )
+            .replace(
+                "__SCRIPT_RENDER_SRC__",
+                f"{base_href}static/app-render.js?v={STATIC_ASSET_VERSION}",
+            )
+            .replace(
+                "__SCRIPT_ACTIONS_SRC__",
+                f"{base_href}static/app-actions.js?v={STATIC_ASSET_VERSION}",
+            )
             .replace("__SCRIPT_SRC__", f"{base_href}static/app-{STATIC_ASSET_VERSION}.js")
         )
         return HTMLResponse(
@@ -93,13 +105,28 @@ def create_app(
             headers=no_store_headers,
         )
 
+    @app.get("/static/{asset_path:path}")
+    async def static_asset(asset_path: str) -> FileResponse:
+        resolved_path = (static_dir / asset_path).resolve()
+        if static_dir.resolve() not in resolved_path.parents or not resolved_path.is_file():
+            raise HTTPException(status_code=404, detail="Arquivo estático não encontrado")
+
+        media_type, _ = mimetypes.guess_type(resolved_path.name)
+        return FileResponse(
+            resolved_path,
+            media_type=(media_type or "application/octet-stream") + "; charset=utf-8"
+            if resolved_path.suffix in {".js", ".css", ".html"}
+            else media_type,
+            headers=no_store_headers,
+        )
+
     @app.get("/api/status")
     async def status(request: Request) -> dict[str, object]:
         service: GoesTimelapseService = request.app.state.service
         return service.status_snapshot()
 
     @app.get("/api/downloads")
-    async def downloads(request: Request) -> dict[str, object]:
+    async def downloads(request: Request) -> DownloadsSnapshot:
         service: GoesTimelapseService = request.app.state.service
         return service.downloads_snapshot()
 
@@ -237,8 +264,14 @@ def create_app(
 
 def main() -> None:
     settings = Settings.from_env()
-    _configure_logging(settings.log_level)
-    uvicorn.run(create_app(settings=settings), host=settings.host, port=settings.port)
+    configure_logging(settings.log_level)
+    uvicorn.run(
+        create_app(settings=settings),
+        host=settings.host,
+        port=settings.port,
+        log_config=None,
+        access_log=False,
+    )
 
 
 def _area_payload(area) -> dict[str, object]:
@@ -255,14 +288,6 @@ def _area_payload(area) -> dict[str, object]:
         "state_name": area.state_name,
         "parent_name": area.parent_name,
     }
-
-
-def _configure_logging(level: int) -> None:
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-    )
-
 
 def _base_href_for_request(request: Request) -> str:
     ingress_path = request.headers.get("x-ingress-path", "").strip()

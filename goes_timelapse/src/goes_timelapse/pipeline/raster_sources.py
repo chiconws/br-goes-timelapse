@@ -22,10 +22,21 @@ NETCDF_WGS84_OVERSAMPLE = 2
 
 
 class RasterSource(Protocol):
-    width: int
-    height: int
-    transform: Affine
-    crs: CRS
+    @property
+    def width(self) -> int:
+        ...
+
+    @property
+    def height(self) -> int:
+        ...
+
+    @property
+    def transform(self) -> Affine:
+        ...
+
+    @property
+    def crs(self) -> CRS:
+        ...
 
     def read_image(
         self,

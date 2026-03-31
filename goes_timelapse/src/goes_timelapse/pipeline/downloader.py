@@ -1,31 +1,34 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import json
-import logging
 import re
+import socket
 from pathlib import Path
-from typing import Callable
+from time import perf_counter
+from typing import Any, Callable, Protocol
 from urllib.parse import quote
 import xml.etree.ElementTree as ET
 
 import aiohttp
 import netCDF4
 import rasterio
+from typing_extensions import TypedDict
 
-from goes_timelapse.geo2grid import BRAZIL_LONLAT_BBOX, Geo2GridConverter
+from goes_timelapse.core.logging_utils import get_logger
+from goes_timelapse.pipeline.geo2grid import BRAZIL_LONLAT_BBOX, Geo2GridConverter
 
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = get_logger(__name__)
 NODD_PRODUCT_PREFIX = "ABI-L1b-RadF"
 NODD_LISTING_PREFIX_TEMPLATE = (
     "{product}/{year}/{julian_day}/{hour}/OR_{product}-{band}_G19_"
 )
 GLM_PRODUCT_PREFIX = "GLM-L2-LCFA"
 GLM_LISTING_PREFIX_TEMPLATE = "{product}/{year}/{julian_day}/{hour}/OR_{product}_G19_"
-BOOTSTRAP_RAW_HISTORY = 3
 DOWNLOAD_RETRY_ATTEMPTS = 5
 DOWNLOAD_CONCURRENCY = 2
 CONVERT_CONCURRENCY = 1
@@ -43,6 +46,26 @@ DOWNLOAD_RETRYABLE_ERRORS = (
     asyncio.TimeoutError,
 )
 S3_XML_NAMESPACE = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
+
+
+ProgressHook = Callable[[str, int, int | None], Awaitable[None]]
+
+
+class DownloaderConverter(Protocol):
+    def output_filename(self, source_filename: str) -> str: ...
+    def source_filename(self, output_filename: str) -> str: ...
+    def convert(self, source_path: Path, output_path: Path) -> None: ...
+    def set_ll_bbox(self, ll_bbox: tuple[float, float, float, float]) -> None: ...
+
+
+class SessionLike(Protocol):
+    def get(self, url: Any, **kwargs: Any) -> Any: ...
+
+
+class GlmSlotRecord(TypedDict):
+    slot_timestamp: str
+    source_filenames: list[str]
+    flashes: list[dict[str, float]]
 
 
 @dataclass(slots=True)
@@ -66,7 +89,7 @@ class GoesDownloader:
         *,
         band: str = "C02",
         scratch_dir: Path | None = None,
-        converter: Geo2GridConverter | None = None,
+        converter: DownloaderConverter | None = None,
         progress_callback: Callable[[dict[str, object]], None] | None = None,
     ):
         self._base_url = base_url.rstrip("/") + "/"
@@ -121,6 +144,7 @@ class GoesDownloader:
         connector = aiohttp.TCPConnector(
             limit=DOWNLOAD_CONCURRENCY,
             force_close=True,
+            family=socket.AF_INET,
         )
         async with aiohttp.ClientSession(
             timeout=DOWNLOAD_TIMEOUT,
@@ -149,6 +173,13 @@ class GoesDownloader:
             latest_available = self._latest_available_output(
                 source_filenames,
                 target_timestamps=target_timestamps,
+            )
+            LOGGER.trace(
+                "Imagery refresh plan for %s: targets=%s candidates=%s latest_available=%s",
+                self._band,
+                target_timestamps,
+                candidate_outputs,
+                latest_available,
             )
             self._emit_progress(
                 phase="downloading" if download_missing and candidate_outputs else "idle",
@@ -378,18 +409,25 @@ class GoesDownloader:
                 failed_files=failed_files,
             )
 
-    async def _fetch_listing(self, session: aiohttp.ClientSession) -> list[str]:
+    async def _fetch_listing(self, session: SessionLike) -> list[str]:
         collected: set[str] = set()
         last_error: Exception | None = None
         for prefix in self._listing_prefixes():
             encoded_prefix = quote(prefix, safe="/")
             url = f"{self._base_url}?prefix={encoded_prefix}&max-keys=1000"
+            LOGGER.trace("Fetching imagery listing prefix for %s: %s", self._band, url)
             for attempt in range(1, DOWNLOAD_RETRY_ATTEMPTS + 1):
                 try:
                     async with session.get(url, timeout=LISTING_TIMEOUT) as response:
                         response.raise_for_status()
                         payload = await response.text()
-                    collected.update(self.parse_listing(payload))
+                    parsed = self.parse_listing(payload)
+                    LOGGER.trace(
+                        "Fetched imagery listing prefix for %s: %s file(s)",
+                        self._band,
+                        len(parsed),
+                    )
+                    collected.update(parsed)
                     break
                 except DOWNLOAD_RETRYABLE_ERRORS as err:
                     last_error = err
@@ -417,20 +455,34 @@ class GoesDownloader:
 
     async def _download_source_if_needed(
         self,
-        session: aiohttp.ClientSession,
+        session: SessionLike,
         filename: str,
         *,
-        progress_hook: Callable[[str, int, int | None], asyncio.Future | None] | None = None,
+        progress_hook: ProgressHook | None = None,
     ) -> Path | None:
         output_filename = self.output_filename(filename)
         destination = self._raw_dir / output_filename
-        if destination.exists() and self._is_expected_brazil_tiff(destination):
-            return None
         if destination.exists():
+            try:
+                if destination.stat().st_size > 0:
+                    LOGGER.trace(
+                        "Imagery cache hit for %s: destination=%s",
+                        output_filename,
+                        destination,
+                    )
+                    LOGGER.info(
+                        "Reusing existing raw TIFF without revalidation: %s (size=%s bytes)",
+                        output_filename,
+                        destination.stat().st_size,
+                    )
+                    return None
+            except OSError:
+                LOGGER.warning("Failed to stat cached raw TIFF %s", destination, exc_info=True)
             destination.unlink(missing_ok=True)
 
         source_path = self._source_dir / filename
         if source_path.exists():
+            LOGGER.trace("Reusing staged imagery source %s from %s", filename, source_path)
             return source_path
 
         temporary_path = source_path.with_suffix(source_path.suffix + ".part")
@@ -439,6 +491,13 @@ class GoesDownloader:
             temporary_path.unlink(missing_ok=True)
             source_path.unlink(missing_ok=True)
             try:
+                LOGGER.trace(
+                    "Downloading imagery source %s to staging: temp=%s final=%s attempt=%s",
+                    filename,
+                    temporary_path,
+                    source_path,
+                    attempt,
+                )
                 async with session.get(f"{self._base_url}{source_key}") as response:
                     response.raise_for_status()
                     total_bytes = _int_or_none(response.headers.get("Content-Length"))
@@ -451,6 +510,7 @@ class GoesDownloader:
                                 await progress_hook(output_filename, downloaded_bytes, total_bytes)
 
                 temporary_path.replace(source_path)
+                LOGGER.trace("Imagery download completed for %s -> %s", filename, source_path)
                 return source_path
             except DOWNLOAD_RETRYABLE_ERRORS as err:
                 temporary_path.unlink(missing_ok=True)
@@ -475,15 +535,51 @@ class GoesDownloader:
     async def _convert_source_to_tiff(self, filename: str, source_path: Path) -> int:
         output_filename = self.output_filename(filename)
         destination = self._raw_dir / output_filename
-        if destination.exists() and self._is_expected_brazil_tiff(destination):
-            source_path.unlink(missing_ok=True)
-            return 0
         if destination.exists():
+            try:
+                if destination.stat().st_size > 0:
+                    LOGGER.trace(
+                        "Skipping imagery convert because cached TIFF already exists: %s",
+                        destination,
+                    )
+                    LOGGER.info(
+                        "Reusing existing raw TIFF without revalidation: %s (size=%s bytes)",
+                        output_filename,
+                        destination.stat().st_size,
+                    )
+                    source_path.unlink(missing_ok=True)
+                    return 0
+            except OSError:
+                LOGGER.warning("Failed to stat cached raw TIFF %s", destination, exc_info=True)
+            LOGGER.warning("Replacing empty/unreadable raw TIFF before convert: %s", destination)
             destination.unlink(missing_ok=True)
 
         try:
+            started_at = perf_counter()
+            LOGGER.trace(
+                "Starting imagery convert for %s: source=%s destination=%s",
+                filename,
+                source_path,
+                destination,
+            )
             await asyncio.to_thread(self._converter.convert, source_path, destination)
-            LOGGER.info("Downloaded NOAA raw frame %s as %s", filename, output_filename)
+            exists_after_convert = destination.exists()
+            size_after_convert = destination.stat().st_size if exists_after_convert else None
+            duration_seconds = perf_counter() - started_at
+            LOGGER.trace(
+                "Finished imagery convert for %s in %.2fs (exists=%s size=%s)",
+                filename,
+                duration_seconds,
+                exists_after_convert,
+                size_after_convert,
+            )
+            LOGGER.info(
+                "Downloaded NOAA raw frame %s as %s (exists=%s, size=%s bytes)",
+                filename,
+                output_filename,
+                exists_after_convert,
+                size_after_convert,
+            )
             source_path.unlink(missing_ok=True)
             return 1
         except Exception:
@@ -513,11 +609,6 @@ class GoesDownloader:
             return
         self._progress_callback(payload)
 
-    def _target_history(self) -> int:
-        if any(self._raw_dir.glob("*.tif")):
-            return self._raw_history
-        return min(self._raw_history, BOOTSTRAP_RAW_HISTORY)
-
     def _candidate_source_filenames(
         self,
         source_filenames: list[str],
@@ -525,13 +616,26 @@ class GoesDownloader:
         target_timestamps: tuple[str, ...] | None,
     ) -> list[str]:
         if target_timestamps is None:
-            return source_filenames[: self._target_history()]
+            selected = source_filenames[: self._raw_history]
+            LOGGER.trace(
+                "Selected imagery candidates for %s without explicit targets: %s",
+                self._band,
+                [self.output_filename(filename) for filename in selected],
+            )
+            return selected
         target_set = set(target_timestamps)
-        return [
+        selected = [
             filename
             for filename in source_filenames
             if _slot_timestamp_for_output_filename(self.output_filename(filename)) in target_set
         ]
+        LOGGER.trace(
+            "Selected imagery candidates for %s with targets=%s: %s",
+            self._band,
+            target_timestamps,
+            [self.output_filename(filename) for filename in selected],
+        )
+        return selected
 
     def _latest_available_output(
         self,
@@ -646,6 +750,7 @@ class GlmDownloader:
         connector = aiohttp.TCPConnector(
             limit=DOWNLOAD_CONCURRENCY,
             force_close=True,
+            family=socket.AF_INET,
         )
         async with aiohttp.ClientSession(
             timeout=DOWNLOAD_TIMEOUT,
@@ -656,6 +761,12 @@ class GlmDownloader:
             candidate_sources, latest_slot_output = self._candidate_source_filenames(
                 source_filenames,
                 target_timestamps=target_timestamps,
+            )
+            LOGGER.trace(
+                "GLM refresh plan: targets=%s candidates=%s latest_available=%s",
+                target_timestamps,
+                candidate_sources,
+                latest_slot_output,
             )
             self._emit_progress(
                 phase="downloading" if download_missing and candidate_sources else "idle",
@@ -879,18 +990,21 @@ class GlmDownloader:
             failed_files=failed_files,
         )
 
-    async def _fetch_listing(self, session: aiohttp.ClientSession) -> list[str]:
+    async def _fetch_listing(self, session: SessionLike) -> list[str]:
         collected: set[str] = set()
         last_error: Exception | None = None
         for prefix in self._listing_prefixes():
             encoded_prefix = quote(prefix, safe="/")
             url = f"{self._base_url}?prefix={encoded_prefix}&max-keys=1000"
+            LOGGER.trace("Fetching GLM listing prefix: %s", url)
             for attempt in range(1, DOWNLOAD_RETRY_ATTEMPTS + 1):
                 try:
                     async with session.get(url, timeout=LISTING_TIMEOUT) as response:
                         response.raise_for_status()
                         payload = await response.text()
-                    collected.update(self.parse_listing(payload))
+                    parsed = self.parse_listing(payload)
+                    LOGGER.trace("Fetched GLM listing prefix with %s file(s)", len(parsed))
+                    collected.update(parsed)
                     break
                 except DOWNLOAD_RETRYABLE_ERRORS as err:
                     last_error = err
@@ -918,13 +1032,14 @@ class GlmDownloader:
 
     async def _download_source_if_needed(
         self,
-        session: aiohttp.ClientSession,
+        session: SessionLike,
         filename: str,
         *,
-        progress_hook: Callable[[str, int, int | None], asyncio.Future | None] | None = None,
+        progress_hook: ProgressHook | None = None,
     ) -> Path | None:
         source_path = self._source_dir / filename
         if source_path.exists():
+            LOGGER.trace("Reusing staged GLM source %s from %s", filename, source_path)
             return source_path
 
         temporary_path = source_path.with_suffix(source_path.suffix + ".part")
@@ -933,6 +1048,13 @@ class GlmDownloader:
             temporary_path.unlink(missing_ok=True)
             source_path.unlink(missing_ok=True)
             try:
+                LOGGER.trace(
+                    "Downloading GLM source %s to staging: temp=%s final=%s attempt=%s",
+                    filename,
+                    temporary_path,
+                    source_path,
+                    attempt,
+                )
                 async with session.get(f"{self._base_url}{source_key}") as response:
                     response.raise_for_status()
                     total_bytes = _int_or_none(response.headers.get("Content-Length"))
@@ -945,6 +1067,7 @@ class GlmDownloader:
                                 await progress_hook(filename, downloaded_bytes, total_bytes)
 
                 temporary_path.replace(source_path)
+                LOGGER.trace("GLM download completed for %s -> %s", filename, source_path)
                 return source_path
             except DOWNLOAD_RETRYABLE_ERRORS as err:
                 temporary_path.unlink(missing_ok=True)
@@ -970,9 +1093,15 @@ class GlmDownloader:
         output_filename = self.output_filename(filename)
         destination = self._raw_dir / output_filename
         try:
+            started_at = perf_counter()
             record = self._load_slot_record(destination)
             processed_sources = set(record["source_filenames"])
             if filename in processed_sources:
+                LOGGER.trace(
+                    "Skipping GLM merge because source already exists in slot %s: %s",
+                    output_filename,
+                    filename,
+                )
                 source_path.unlink(missing_ok=True)
                 return 0
 
@@ -981,6 +1110,13 @@ class GlmDownloader:
             record["source_filenames"].sort(reverse=True)
             record["flashes"].extend(flashes)
             self._write_slot_record(destination, record)
+            LOGGER.trace(
+                "Merged GLM source %s into %s with %s flash(es) in %.2fs",
+                filename,
+                output_filename,
+                len(flashes),
+                perf_counter() - started_at,
+            )
             source_path.unlink(missing_ok=True)
             return 1
         except Exception:
@@ -1009,22 +1145,28 @@ class GlmDownloader:
         return flashes
 
     @staticmethod
-    def _load_slot_record(path: Path) -> dict[str, object]:
+    def _load_slot_record(path: Path) -> GlmSlotRecord:
         if not path.exists():
             return {
-                "slot_timestamp": parse_goes_slot_prefix(path.name),
+                "slot_timestamp": parse_goes_slot_prefix(path.name) or "",
                 "source_filenames": [],
                 "flashes": [],
             }
         payload = json.loads(path.read_text(encoding="utf-8"))
         return {
             "slot_timestamp": str(payload.get("slot_timestamp") or parse_goes_slot_prefix(path.name)),
-            "source_filenames": list(payload.get("source_filenames") or []),
-            "flashes": list(payload.get("flashes") or []),
+            "source_filenames": [str(name) for name in (payload.get("source_filenames") or [])],
+            "flashes": [
+                {"lat": float(item["lat"]), "lon": float(item["lon"])}
+                for item in (payload.get("flashes") or [])
+                if isinstance(item, dict)
+                and isinstance(item.get("lat"), int | float)
+                and isinstance(item.get("lon"), int | float)
+            ],
         }
 
     @staticmethod
-    def _write_slot_record(path: Path, record: dict[str, object]) -> None:
+    def _write_slot_record(path: Path, record: GlmSlotRecord) -> None:
         temporary_path = path.with_suffix(".json.tmp")
         temporary_path.write_text(
             json.dumps(record, ensure_ascii=True, separators=(",", ":")),
@@ -1043,7 +1185,7 @@ class GlmDownloader:
         if target_timestamps is None:
             selected_slots = []
             selected_slot_set = set()
-            target_history = self._target_history()
+            target_history = self._raw_history
         else:
             selected_slots = list(target_timestamps)
             selected_slot_set = set(selected_slots)
@@ -1085,12 +1227,13 @@ class GlmDownloader:
                     if slot_timestamp in available_slots:
                         latest_slot_output = f"{slot_timestamp}_glm.json"
                         break
+        LOGGER.trace(
+            "Selected GLM candidates: selected_slots=%s candidates=%s latest_slot_output=%s",
+            selected_slots,
+            candidate_sources,
+            latest_slot_output,
+        )
         return candidate_sources, latest_slot_output
-
-    def _target_history(self) -> int:
-        if any(self._raw_dir.glob("*.json")):
-            return self._raw_history
-        return min(self._raw_history, BOOTSTRAP_RAW_HISTORY)
 
     def _kept_raws_on_disk(self) -> list[Path]:
         return sorted(

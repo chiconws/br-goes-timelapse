@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -8,6 +9,7 @@ from pathlib import Path
 
 
 BRAZIL_LONLAT_BBOX = (-75.5, -35.5, -30.5, 7.5)
+LOGGER = logging.getLogger(__name__)
 
 
 class Geo2GridConverter:
@@ -94,5 +96,35 @@ class Geo2GridConverter:
                     f"Geo2Grid não gerou o GeoTIFF esperado para {source_path.name}"
                 )
 
-            output_path.unlink(missing_ok=True)
-            shutil.move(str(temporary_output), output_path)
+            _publish_output(temporary_output, output_path)
+
+
+def _publish_output(temporary_output: Path, output_path: Path) -> None:
+    publish_path = output_path.with_name(f".{output_path.name}.tmp")
+    publish_path.unlink(missing_ok=True)
+    try:
+        with temporary_output.open("rb") as source_handle, publish_path.open(
+            "wb"
+        ) as destination_handle:
+            shutil.copyfileobj(source_handle, destination_handle, length=1024 * 1024)
+            destination_handle.flush()
+            os.fsync(destination_handle.fileno())
+
+        publish_path.replace(output_path)
+        _fsync_directory(output_path.parent)
+    except Exception:
+        publish_path.unlink(missing_ok=True)
+        raise
+
+
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        directory_fd = os.open(path, flags)
+    except OSError:
+        LOGGER.debug("Skipping directory fsync for %s", path, exc_info=True)
+        return
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)

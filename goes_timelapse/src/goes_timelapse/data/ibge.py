@@ -7,7 +7,7 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import quote
 
-from goes_timelapse.models import AreaCatalogEntry, AreaGeometry
+from goes_timelapse.core.models import AreaCatalogEntry, AreaGeometry
 
 
 MALHAS_SEGMENTS = {
@@ -51,7 +51,7 @@ class IbgeGeometryStore:
         return AreaGeometry(
             area_id=str(payload["area_id"]),
             centroid=(float(payload["centroid"][0]), float(payload["centroid"][1])),
-            bounds=tuple(float(value) for value in payload["bounds"]),
+            bounds=_coerce_bounds(payload["bounds"]),
             polygon=tuple((float(lon), float(lat)) for lon, lat in payload["polygon"]),
         )
 
@@ -109,9 +109,36 @@ def _geometry_from_geojson(area_id: str, payload: object) -> AreaGeometry:
     return AreaGeometry(
         area_id=area_id,
         centroid=(round(float(centroid[0]), 6), round(float(centroid[1]), 6)),
-        bounds=tuple(round(float(value), 6) for value in bounds),
+        bounds=_rounded_bounds(bounds),
         polygon=tuple((round(float(lon), 6), round(float(lat), 6)) for lon, lat in polygon),
     )
+
+
+def _coerce_bounds(raw_bounds: object) -> tuple[float, float, float, float]:
+    if not isinstance(raw_bounds, list | tuple) or len(raw_bounds) != 4:
+        raise ValueError("Invalid geometry bounds payload")
+    left, bottom, right, top = raw_bounds
+    return (
+        _coerce_float(left),
+        _coerce_float(bottom),
+        _coerce_float(right),
+        _coerce_float(top),
+    )
+
+
+def _rounded_bounds(bounds: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    return (
+        round(float(bounds[0]), 6),
+        round(float(bounds[1]), 6),
+        round(float(bounds[2]), 6),
+        round(float(bounds[3]), 6),
+    )
+
+
+def _coerce_float(value: object) -> float:
+    if not isinstance(value, int | float | str):
+        raise ValueError("Invalid geometry coordinate")
+    return float(value)
 
 
 def _extract_exterior_rings(geometry: dict[str, object]) -> list[list[tuple[float, float]]]:

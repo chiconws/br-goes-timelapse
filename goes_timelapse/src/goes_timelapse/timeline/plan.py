@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from goes_timelapse.solar import (
+from goes_timelapse.timeline.solar import (
     DEFAULT_TRANSITION_BLEND_WEIGHTS,
     is_within_visible_window,
     sunrise_transition_alpha,

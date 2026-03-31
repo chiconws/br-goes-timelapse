@@ -3,12 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import re
 from zoneinfo import ZoneInfo
+from typing import Sequence
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from rasterio.warp import transform as transform_points
@@ -16,16 +16,17 @@ from rasterio.warp import transform_bounds
 from rasterio.windows import bounds as window_bounds
 from rasterio.windows import Window
 
-from goes_timelapse.catalog import load_boundary_lines
-from goes_timelapse.config import Settings
-from goes_timelapse.models import AreaCatalogEntry, AreaGeometry, BoundaryLine
-from goes_timelapse.raster_sources import WGS84_CRS, open_raster_source
+from goes_timelapse.core.config import Settings
+from goes_timelapse.core.logging_utils import get_logger
+from goes_timelapse.core.models import AreaCatalogEntry, AreaGeometry, BoundaryLine
+from goes_timelapse.data.catalog import load_boundary_lines
+from goes_timelapse.pipeline.raster_sources import WGS84_CRS, open_raster_source
 
 
 BRAZIL_TZ = ZoneInfo("America/Sao_Paulo")
 LEGACY_TIMESTAMP_PATTERN = re.compile(r"^(\d{11})_")
 NETCDF_TIMESTAMP_PATTERN = re.compile(r"_s(\d{13,14})_")
-LOGGER = logging.getLogger(__name__)
+LOGGER = get_logger(__name__)
 
 
 @dataclass(slots=True, frozen=True)
@@ -90,13 +91,19 @@ class AreaRenderer:
         self,
         area: AreaCatalogEntry,
         geometry: AreaGeometry,
-        frame_inputs: list[Path | FrameSpec],
+        frame_inputs: Sequence[Path | FrameSpec],
         *,
         marker_coordinates: tuple[float, float] | None = None,
     ) -> list[Path]:
         frame_specs = self._coerce_frame_specs(frame_inputs)[-self._settings.frame_count :]
         if not frame_specs:
             return []
+        LOGGER.trace(
+            "Rendering %s frame(s) for %s: %s",
+            len(frame_specs),
+            area.area_id,
+            [frame.timestamp for frame in frame_specs],
+        )
 
         output_dir = self._settings.processed_dir / area.area_id
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -117,6 +124,12 @@ class AreaRenderer:
             if stale_path.name not in keep_filenames:
                 stale_path.unlink(missing_ok=True)
 
+        LOGGER.trace(
+            "Rendered PNG cache for %s now contains %s file(s): %s",
+            area.area_id,
+            len(rendered_paths),
+            [path.name for path in rendered_paths],
+        )
         return rendered_paths
 
     def _frame_output_name(self, frame_spec: FrameSpec, plan: RenderPlan) -> str:
@@ -453,7 +466,9 @@ class AreaRenderer:
 
         lon_values = [point[0] for point in points]
         lat_values = [point[1] for point in points]
-        x_values, y_values = transform_points(WGS84_CRS, src.crs, lon_values, lat_values)
+        transformed = transform_points(WGS84_CRS, src.crs, lon_values, lat_values)
+        x_values = transformed[0]
+        y_values = transformed[1]
         return [inverse_transform * (x, y) for x, y in zip(x_values, y_values, strict=True)]
 
     def _build_destination_bounds(self, geometry: AreaGeometry) -> tuple[float, float, float, float]:
@@ -505,12 +520,7 @@ class AreaRenderer:
         row_off = min(max(row_off, 0), max(src.height - 1, 0))
         col_max = min(max(col_max, col_off + 1), src.width)
         row_max = min(max(row_max, row_off + 1), src.height)
-        return Window(
-            col_off=col_off,
-            row_off=row_off,
-            width=col_max - col_off,
-            height=row_max - row_off,
-        )
+        return Window.from_slices((row_off, row_max), (col_off, col_max))
 
     def _transform_bounds_to_source(
         self,
@@ -528,17 +538,19 @@ class AreaRenderer:
             samples.append((lon, bottom))
             samples.append((left, lat))
             samples.append((right, lat))
-        x_values, y_values = transform_points(
+        transformed = transform_points(
             WGS84_CRS,
             dst_crs,
             [point[0] for point in samples],
             [point[1] for point in samples],
         )
+        x_values = transformed[0]
+        y_values = transformed[1]
         return (min(x_values), min(y_values), max(x_values), max(y_values))
 
     def _source_bounds_in_wgs84(self, src) -> tuple[float, float, float, float]:
         source_bounds = window_bounds(
-            Window(col_off=0, row_off=0, width=src.width, height=src.height),
+            Window.from_slices((0, src.height), (0, src.width)),
             src.transform,
         )
         if src.crs == WGS84_CRS:
@@ -615,7 +627,7 @@ class AreaRenderer:
         return (marker_x, marker_y)
 
     @staticmethod
-    def _coerce_frame_specs(frame_inputs: list[Path | FrameSpec]) -> list[FrameSpec]:
+    def _coerce_frame_specs(frame_inputs: Sequence[Path | FrameSpec]) -> list[FrameSpec]:
         frame_specs: list[FrameSpec] = []
         for item in frame_inputs:
             if isinstance(item, FrameSpec):
@@ -638,6 +650,12 @@ class WebpBuilder:
     def build(self, area_id: str, png_paths: list[Path]) -> Path:
         output_path = self._settings.media_dir / f"{area_id}.webp"
         duration_ms = max(100, round(1000 / self._settings.gif_fps))
+        LOGGER.trace(
+            "Building WebP for %s from %s PNG frame(s): %s",
+            area_id,
+            len(png_paths),
+            [path.name for path in png_paths],
+        )
         frames = [Image.open(path).convert("RGBA") for path in png_paths]
         if not frames:
             raise ValueError(f"No rendered PNG frames found for {area_id}")
@@ -661,6 +679,7 @@ class WebpBuilder:
             frame.close()
         for frame in sequence[len(frames) :]:
             frame.close()
+        LOGGER.trace("WebP build finished for %s: %s", area_id, output_path.name)
         return output_path
 
 

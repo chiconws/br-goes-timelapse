@@ -6,7 +6,7 @@ import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
-from goes_timelapse.models import AreaCatalogEntry, TrackedArea
+from goes_timelapse.core.models import AreaCatalogEntry, TrackedArea
 
 
 LOGGER = logging.getLogger(__name__)
