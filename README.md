@@ -1,12 +1,12 @@
 # GOES Timelapse para Home Assistant
 
-Este repositório contém um app do Home Assistant para acompanhar municípios brasileiros com imagens do satélite GOES-19. O app monta uma timeline útil de frames por município, baixa apenas os slots necessários dos produtos oficiais da NOAA, gera animações WebP dentro do Home Assistant e sobrepõe marcador opcional e descargas elétricas GLM.
+Este repositório contém um app do Home Assistant para acompanhar municípios brasileiros com imagens do satélite GOES-19. O app monta uma timeline útil de frames por município, lê dos produtos oficiais da NOAA apenas as partes necessárias, gera animações WebP dentro do Home Assistant e sobrepõe marcador opcional e descargas elétricas GLM.
 
 > [!NOTE]
 > Este projeto foi construído com ajuda intensiva de IA generativa. O código está em uso real e foi revisado ao longo do desenvolvimento, mas a expectativa correta continua sendo validação humana contínua antes de uso em produção.
 
 > [!WARNING]
-> Este app faz leitura, escrita, conversão e remoção de arquivos grandes o tempo todo. `data_dir` guarda downloads brutos, cache convertido e artefatos persistentes; `scratch_dir` guarda temporários intensivos de conversão; `state_dir` guarda o SQLite de estado. Se você deixar `data_dir` e `scratch_dir` em SSD pequeno ou em volume sensível a desgaste, o app pode acelerar bastante esse desgaste. O recomendado é usar um HDD ou volume dedicado para `data_dir` e `scratch_dir`, e manter `state_dir` em armazenamento local confiável.
+> Cada município consome cerca de `0.9 GB/dia` de internet. Veja [Uso de rede](#uso-de-rede).
 
 ## O que o app faz
 
@@ -46,25 +46,28 @@ Para esses dispositivos ARM, seria necessário publicar builds específicas para
 
 ## Uso de rede
 
-Este app usa os produtos oficiais `ABI-L1b-RadF-M6C02`, `ABI-L1b-RadF-M6C13` e `GLM-L2-LCFA` da NOAA. Os raws oficiais são baixados em `netCDF`; `C02` e `C13` são convertidos para um `GeoTIFF` local do Brasil antes da renderização, e o `GLM` é agregado por slot de `10 minutos`.
+Este app usa os produtos oficiais `ABI-L1b-RadF-M6C02`, `ABI-L1b-RadF-M6C13` e `GLM-L2-LCFA` da NOAA.
 
-> [!WARNING]
-> O consumo de internet é alto. Mesmo com a timeline útil compartilhada entre municípios, uma instância ativa pode baixar algo na ordem de dezenas de gigabytes por dia.
+O app não baixa os arquivos inteiros da NOAA. Ele lê por HTTP Range só o que usa:
 
-- A timeline útil usa slots de `10 minutos`, então uma instância com pelo menos um município acompanhado trabalha com até `144` slots por dia.
-- O app compartilha os raws entre municípios: adicionar mais municípios não multiplica o tráfego de forma linear, porque o download segue a união da timeline útil.
-- Com os tamanhos observados no bucket da NOAA em `2026-03-29`, a ordem de grandeza atual é:
-  - `C02`: ~`264.5 MB` por slot
-  - `C13`: ~`24.8 MB` por slot
-  - `GLM`: ~`9.8 MB` agregados por slot de `10 minutos`
-- Em um cenário simples com cerca de `12h` de dia:
-  - `C02` participa de ~`72` slots
-  - `C13` participa de ~`72` slots de noite + `8` slots de crossfade
-  - `GLM` participa dos `144` slots do dia
-- Com essa conta, a estimativa prática fica em cerca de `22.4 GB/dia` por instância ativa, ou cerca de `21.9 GiB/dia`.
-- Como o tamanho dos produtos e a duração do dia variam, o planejamento seguro é considerar algo na faixa de `20 a 26 GB/dia` enquanto houver ao menos um município acompanhado.
-- Em instalações novas, reinícios ou recuperação de indisponibilidade, pode haver um pico temporário enquanto a timeline útil do cache é recomposta.
-- Em disco, o app não guarda todos os `netCDF` baixados. Depois da conversão, ele mantém o cache recente da timeline útil em `GeoTIFF`/JSON e remove o restante.
+- `C02` e `C13`: as linhas da imagem que cobrem cada município.
+- `GLM`: as coordenadas dos raios.
+
+Medido em 24h reais para Vila Velha - ES, em `2026-10-30`:
+
+| Fonte | Por dia |
+|---|---:|
+| Imagens (`C02` e `C13`) | `0.89 GB` |
+| Raios (`GLM`) | `0.03 GB` |
+| **Total com 1 município** | **`0.92 GB`** |
+| Baixando os arquivos inteiros | `32.9 GB` |
+
+- Cada município lê as próprias imagens, então cada um soma cerca de `0.9 GB/dia`. Com `5` municípios, conte com cerca de `4.5 GB/dia`.
+- O `GLM` é compartilhado e não aumenta com mais municípios.
+- O custo depende de quantas linhas o município ocupa na imagem, então municípios grandes consomem mais.
+- Os tamanhos variam com a estação e a nebulosidade. Considere esses números como ordem de grandeza.
+- Ao adicionar um município, o app lê a timeline dele de uma vez, sem tocar nos arquivos dos outros. De dia, cada quadro custa cerca de `10 MB`.
+- Depois de uma parada, o app recompõe os quadros que faltam, o que gera um pico temporário.
 
 ## Como adicionar ao Home Assistant
 
@@ -89,7 +92,7 @@ Em versões mais antigas do Home Assistant, a área de `Apps` ainda pode aparece
 2. Busque o município desejado.
 3. Adicione o município ao acompanhamento.
 4. Se quiser, configure um marcador manual com um único campo no formato `latitude, longitude`.
-5. Aguarde o primeiro download dos quadros brutos da NOAA e a conversão inicial do cache.
+5. Aguarde a leitura inicial dos quadros da NOAA.
 6. Quando o processamento terminar, a animação ficará disponível na interface e em `/media/goes_timelapse/`.
 
 ## Armazenamento e diretórios
@@ -100,13 +103,23 @@ Por padrão, o app usa estes caminhos:
 - `state_dir: /config/goes_timelapse/state`
 - `scratch_dir: /data/goes_timelapse/tmp`
 
-Na prática:
+```text
+data_dir/
+├── raw/
+│   ├── visible/<area_id>/    # um GeoTIFF por slot de C02, por município
+│   ├── infrared/<area_id>/   # um GeoTIFF por slot de C13, por município
+│   └── lightning/            # um JSON por slot com os raios, compartilhado
+├── processed/<area_id>/      # quadros PNG renderizados
+└── geometry/                 # contornos dos municípios
+```
 
-- `data_dir` recebe `source/`, `raw/`, `processed/`, `geometry/` e outros artefatos persistentes.
-- `scratch_dir` recebe temporários de alto churn, especialmente do `Geo2Grid`.
-- `state_dir` recebe o `state.db`, que deve ficar em armazenamento mais confiável.
+- Cada município tem a própria pasta de imagens, e adicionar um novo não sobrescreve os arquivos dos outros.
+- Remover um município apaga as pastas dele e mantém as dos demais.
+- O app guarda apenas os quadros da timeline atual. Cada GeoTIFF ocupa cerca de `50 a 100 KB`.
+- `state_dir` guarda o `state.db`, que deve ficar em armazenamento confiável.
+- `scratch_dir` guarda temporários. Com a leitura parcial, ele é pouco usado.
 
-Se você quiser proteger o SSD principal do host, um desenho melhor é:
+Para guardar o cache em outro disco:
 
 ```yaml
 data_dir: /media/SEU_DISCO/goes_timelapse

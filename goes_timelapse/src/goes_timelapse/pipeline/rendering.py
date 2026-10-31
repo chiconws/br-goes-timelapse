@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import re
+from time import perf_counter
 from zoneinfo import ZoneInfo
 from typing import Sequence
 
@@ -111,6 +112,8 @@ class AreaRenderer:
         with _open_source(frame_specs[0].primary_path) as src:
             plan = self._build_render_plan(geometry, src, marker_coordinates=marker_coordinates)
 
+        started_at = perf_counter()
+        rendered_count = 0
         rendered_paths: list[Path] = []
         keep_filenames = set()
         for frame_spec in frame_specs:
@@ -118,12 +121,21 @@ class AreaRenderer:
             keep_filenames.add(png_path.name)
             if not png_path.exists():
                 self._render_frame(frame_spec, png_path, area, plan)
+                rendered_count += 1
             rendered_paths.append(png_path)
 
         for stale_path in output_dir.glob("*.png"):
             if stale_path.name not in keep_filenames:
                 stale_path.unlink(missing_ok=True)
 
+        LOGGER.info(
+            "METRIC render area=%s frames=%s rendered=%s size=%s elapsed_s=%.2f",
+            area.area_id,
+            len(frame_specs),
+            rendered_count,
+            plan.output_size[0],
+            perf_counter() - started_at,
+        )
         LOGGER.trace(
             "Rendered PNG cache for %s now contains %s file(s): %s",
             area.area_id,
@@ -174,7 +186,7 @@ class AreaRenderer:
         marker_coordinates: tuple[float, float] | None = None,
     ) -> RenderPlan:
         dst_bounds = self._fit_destination_bounds_to_source(
-            self._build_destination_bounds(geometry),
+            self.destination_bounds(geometry),
             src,
         )
         window = self._build_source_window(src, dst_bounds)
@@ -471,7 +483,7 @@ class AreaRenderer:
         y_values = transformed[1]
         return [inverse_transform * (x, y) for x, y in zip(x_values, y_values, strict=True)]
 
-    def _build_destination_bounds(self, geometry: AreaGeometry) -> tuple[float, float, float, float]:
+    def destination_bounds(self, geometry: AreaGeometry) -> tuple[float, float, float, float]:
         min_lon, min_lat, max_lon, max_lat = geometry.bounds
         centroid_lon, centroid_lat = geometry.centroid
         base_span = max(max_lon - min_lon, max_lat - min_lat)
@@ -648,6 +660,7 @@ class WebpBuilder:
         self._settings = settings
 
     def build(self, area_id: str, png_paths: list[Path]) -> Path:
+        started_at = perf_counter()
         output_path = self._settings.media_dir / f"{area_id}.webp"
         duration_ms = max(100, round(1000 / self._settings.gif_fps))
         LOGGER.trace(
@@ -679,7 +692,13 @@ class WebpBuilder:
             frame.close()
         for frame in sequence[len(frames) :]:
             frame.close()
-        LOGGER.trace("WebP build finished for %s: %s", area_id, output_path.name)
+        LOGGER.info(
+            "METRIC webp area=%s frames=%s bytes=%s elapsed_s=%.2f",
+            area_id,
+            len(png_paths),
+            output_path.stat().st_size,
+            perf_counter() - started_at,
+        )
         return output_path
 
 
