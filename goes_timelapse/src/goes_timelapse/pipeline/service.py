@@ -434,13 +434,11 @@ class GoesTimelapseService:
                         assert report is not None
                     except Exception as err:
                         LOGGER.exception("Raw refresh failed for %s", plan.source_key)
+                        error_messages.append(f"{RAW_SOURCE_LABELS[plan.source_key]}: {err}")
                         if self._raw_files_for_source(plan.source_key):
                             self._mark_source_partial_due_to_error(plan.source_key)
                         else:
                             self._mark_source_error(plan.source_key, str(err))
-                            error_messages.append(
-                                f"{RAW_SOURCE_LABELS[plan.source_key]}: {err}"
-                            )
                         continue
 
                     self._finalize_download_status(plan.source_key, report)

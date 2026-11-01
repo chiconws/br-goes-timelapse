@@ -107,6 +107,7 @@
     var button = app.findActionNode(event.target, "data-action", app.elements.trackedList);
     var action;
     var areaId;
+    var railItem;
 
     if (!button || button.disabled) {
       return;
@@ -121,6 +122,12 @@
     if (action === "select") {
       app.state.selectedAreaId = areaId;
       app.renderTracked();
+      railItem = app.elements.trackedList.querySelector(
+        '.rail-item[data-area-id="' + CSS.escape(areaId) + '"]'
+      );
+      if (railItem) {
+        railItem.focus();
+      }
       return;
     }
 
@@ -207,6 +214,9 @@
         if (shouldRenderTracked) {
           app.renderTracked();
           app.renderSearchResults();
+          if (app.state.downloads.length) {
+            app.renderDownloads();
+          }
         }
       })
       .catch(function () {

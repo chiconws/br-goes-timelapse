@@ -428,6 +428,7 @@ button {
 }
 
 .rail-frame {
+  position: relative;
   display: grid;
   place-items: center;
   aspect-ratio: 1;
@@ -460,6 +461,15 @@ button {
 
 .rail-frame[data-status="error"] {
   color: var(--danger);
+}
+
+.rail-frame img + .rail-status {
+  position: absolute;
+  inset: auto 0 0;
+  padding: 2px 8px;
+  background: var(--raised);
+  font-size: 0.8125rem;
+  text-align: center;
 }
 
 .service {

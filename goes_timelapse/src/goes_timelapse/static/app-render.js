@@ -66,6 +66,11 @@
     }
 
     summary.removeAttribute("data-tone");
+    if (!status.last_poll_finished_at) {
+      summary.textContent = "Primeira checagem em andamento.";
+      return;
+    }
+
     summary.textContent =
       "Serviço em dia. Última checagem: " +
       app.formatStatusDateTime(status.last_poll_finished_at) +
@@ -275,6 +280,15 @@
 
   function renderRailItem(area, isSelected) {
     var previewUrl = area.media_exists ? app.buildPreviewUrl(area) : "";
+    var status = area.status || "queued";
+    var statusMarkup =
+      previewUrl && status === "ready"
+        ? ""
+        : '<span class="rail-status" title="' +
+          app.escapeHtml(area.last_error || "") +
+          '">' +
+          app.escapeHtml(app.statusLabel(status)) +
+          "</span>";
 
     return (
       '<button class="rail-item" type="button" data-action="select" data-area-id="' +
@@ -285,9 +299,8 @@
       '<span class="rail-frame" data-status="' +
       app.escapeHtml(area.status || "") +
       '">' +
-      (previewUrl
-        ? '<img src="' + app.escapeHtml(previewUrl) + '" alt="" />'
-        : app.escapeHtml(app.statusLabel(area.status || "queued"))) +
+      (previewUrl ? '<img src="' + app.escapeHtml(previewUrl) + '" alt="" />' : "") +
+      statusMarkup +
       "</span>" +
       '<span class="rail-name">' +
       app.escapeHtml(area.display_name) +
