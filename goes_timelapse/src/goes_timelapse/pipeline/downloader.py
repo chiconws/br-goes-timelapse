@@ -749,7 +749,7 @@ class GlmDownloader:
             )
         except Exception as err:
             LOGGER.warning("GLM layout check inconclusive for %s: %s", filename, err)
-            return True
+            return False
         if direct != reference:
             LOGGER.error("GLM layout changed, stopping GLM reads: mismatch in %s", filename)
             return False

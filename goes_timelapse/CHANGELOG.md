@@ -10,7 +10,7 @@
 - Baixa os dados de raios com até `8` conexões em paralelo.
 - Registra métricas `METRIC` nos logs para recorte, ciclo de download, render e WebP.
 - Repete requisições após erros `429`, `500`, `502`, `503` e `504` da NOAA.
-- Confere a cada hora a leitura direta do `GLM` com a biblioteca `HDF5`; se divergirem, para de ler raios e registra o erro no log até voltarem a bater.
+- Confere a cada hora a leitura direta do `GLM` com a biblioteca `HDF5`; se divergirem ou a conferência falhar, para de ler raios e registra no log até voltarem a bater.
 
 ## 1.1.2
 
