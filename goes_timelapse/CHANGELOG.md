@@ -6,11 +6,13 @@
 - Guarda as imagens em uma pasta por município: adicionar um não altera os arquivos dos outros, e remover apaga só as pastas dele.
 - Remove o `Geo2Grid`/`polar2grid`; a conversão agora é própria e mantém o mesmo `GeoTIFF` e o mesmo realce.
 - Adicionar um município agora lê a timeline inteira dele, inclusive além das últimas `4` horas.
+- Redesenha a interface como um visor: o município selecionado ocupa o palco, os demais ficam em miniaturas, e o status do serviço fica recolhido no rodapé com um resumo por município.
 - Lê as imagens com até `8` conexões em paralelo, reduzindo o tempo por imagem em municípios grandes.
 - Baixa os dados de raios com até `8` conexões em paralelo.
 - Registra métricas `METRIC` nos logs para recorte, ciclo de download, render e WebP.
 - Repete requisições após erros `429`, `500`, `502`, `503` e `504` da NOAA.
 - Confere a cada hora a leitura direta do `GLM` com a biblioteca `HDF5`; se divergirem ou a conferência falhar, para de ler raios e registra no log até voltarem a bater.
+- O ponto marcado pode ficar em qualquer lugar da área da imagem, inclusive em municípios vizinhos.
 
 ## 1.1.2
 

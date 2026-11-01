@@ -25,7 +25,6 @@ from goes_timelapse.pipeline.downloader import (
     GlmDownloader,
     GoesDownloader,
 )
-from goes_timelapse.pipeline.marker_geometry import point_within_polygon
 from goes_timelapse.pipeline.raw_cache import (
     all_raw_files,
     available_lightning_points_by_timestamp,
@@ -262,8 +261,9 @@ class GoesTimelapseService:
             raise ValueError("O marcador só é suportado para municípios acompanhados")
 
         geometry = await asyncio.to_thread(self.geometry_store.load_geometry, area)
-        if not point_within_polygon((marker_lon, marker_lat), geometry.polygon):
-            raise ValueError("As coordenadas precisam estar dentro do município selecionado")
+        min_lon, min_lat, max_lon, max_lat = self.renderer.destination_bounds(geometry)
+        if not (min_lon <= marker_lon <= max_lon and min_lat <= marker_lat <= max_lat):
+            raise ValueError("As coordenadas precisam estar dentro da área da imagem")
 
         self.state_store.set_marker(
             area_id,
@@ -434,13 +434,11 @@ class GoesTimelapseService:
                         assert report is not None
                     except Exception as err:
                         LOGGER.exception("Raw refresh failed for %s", plan.source_key)
+                        error_messages.append(f"{RAW_SOURCE_LABELS[plan.source_key]}: {err}")
                         if self._raw_files_for_source(plan.source_key):
                             self._mark_source_partial_due_to_error(plan.source_key)
                         else:
                             self._mark_source_error(plan.source_key, str(err))
-                            error_messages.append(
-                                f"{RAW_SOURCE_LABELS[plan.source_key]}: {err}"
-                            )
                         continue
 
                     self._finalize_download_status(plan.source_key, report)
