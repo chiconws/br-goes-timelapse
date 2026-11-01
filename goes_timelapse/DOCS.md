@@ -4,49 +4,72 @@
 > Este app foi construído com ajuda intensiva de IA generativa. A base está funcional e em uso real, mas a expectativa correta é continuar validando comportamento, custos de rede e consumo de disco a cada mudança.
 
 > [!WARNING]
-> Este app faz I/O pesado e contínuo. `data_dir` e `scratch_dir` recebem escrita/leitura frequente de arquivos grandes; `state_dir` guarda o estado SQLite. Para não castigar SSD pequeno ou frágil, prefira HDD ou volume dedicado para `data_dir` e `scratch_dir`, deixando `state_dir` em armazenamento local confiável.
+> Cada município consome cerca de `0.9 GB/dia` de internet. Veja [Uso de rede](#uso-de-rede).
 
 ## O que este app faz
 
 - Consulta os produtos oficiais `ABI-L1b-RadF-M6C02`, `ABI-L1b-RadF-M6C13` e `GLM-L2-LCFA` do GOES-19 publicados pela NOAA.
-- Converte cada quadro bruto `C02` e `C13` para um `GeoTIFF` local do Brasil antes de renderizar.
+- Lê por HTTP Range só as linhas de `C02` e `C13` que cobrem cada município e grava um `GeoTIFF` WGS84 por slot na pasta dele.
 - Agrega o `GLM` por slot de `10 minutos` e desenha as descargas elétricas sobre o frame.
 - Permite buscar e acompanhar até `5` municípios ao mesmo tempo.
 - Permite um marcador opcional por município no formato `latitude, longitude`.
 - Gera animações WebP específicas por município em `/media/goes_timelapse/`.
-- Monta uma timeline útil por município e baixa apenas os slots necessários para essa timeline.
+- Monta uma timeline útil por município e lê apenas os slots dessa timeline.
 
 ## Opções
 
-- `data_dir`: diretório persistente para `source/`, `raw/`, `processed/` e `geometry/`.
+- `data_dir`: diretório persistente para `raw/`, `processed/` e `geometry/`.
 - `state_dir`: diretório do banco `state.db`.
-- `scratch_dir`: diretório de temporários de conversão e alto churn.
+- `scratch_dir`: diretório de temporários, pouco usado com a leitura parcial.
 - `poll_minutes`: intervalo, em minutos, entre as verificações de novos quadros na NOAA.
 - `frame_count`: quantidade de quadros usados em cada animação WebP.
 - `gif_fps`: velocidade de reprodução da animação gerada.
-- `raw_history`: opção legada de compatibilidade. O pipeline principal de retenção e download já segue a timeline útil do GIF.
-- `solar_margin_hours`: margem, em horas, aplicada antes do nascer do sol e depois do pôr do sol para permitir downloads da Banda 2. O padrão é `0`, então os downloads acontecem apenas entre o nascer e o pôr do sol.
+- `raw_history`: opção legada de compatibilidade. Download e retenção já seguem a timeline útil de cada município.
+- `solar_margin_hours`: margem, em horas, aplicada antes do nascer do sol e depois do pôr do sol para permitir leituras da Banda 2. O padrão é `0`, então essas leituras acontecem apenas entre o nascer e o pôr do sol.
 - `log_level`: nível de detalhamento dos logs do app.
 
-## Uso de rede e armazenamento
+## Uso de rede
 
-> [!WARNING]
-> O consumo de internet é alto. Uma instância ativa pode baixar dezenas de gigabytes por dia, mesmo compartilhando raws entre municípios.
+O app não baixa os arquivos inteiros da NOAA. Ele lê por HTTP Range só o que usa:
 
-- A timeline trabalha com slots de `10 minutos`, então uma instância ativa pode consumir dados ao longo de `144` slots por dia.
-- Com os tamanhos observados no bucket da NOAA em `2026-03-29`, a ordem de grandeza atual é:
-  - `C02`: ~`264.5 MB` por slot
-  - `C13`: ~`24.8 MB` por slot
-  - `GLM`: ~`9.8 MB` agregados por slot
-- Em um cenário simples com cerca de `12h` de dia, a conta fica aproximadamente:
-  - `72` slots com `C02`
-  - `80` slots com `C13` (`72` de noite + `8` de crossfade)
-  - `144` slots com `GLM`
-- Isso leva a algo em torno de `22.4 GB/dia` (`21.9 GiB/dia`) por instância ativa.
-- Para planejamento de infraestrutura, considere `20 a 26 GB/dia`.
-- O download é compartilhado entre municípios pela união da timeline útil, então o consumo não cresce linearmente por município adicional.
-- Depois da conversão, o app mantém em disco apenas o cache recente da timeline útil.
-- O arquivo final de cada município fica disponível em `media-source://media_source/local/goes_timelapse/<area_id>.webp`.
+- `C02` e `C13`: as linhas da imagem que cobrem cada município.
+- `GLM`: as coordenadas dos raios.
+
+Medido em 24h reais para Vila Velha - ES, em `2026-10-30`:
+
+| Fonte | Por dia |
+|---|---:|
+| Imagens (`C02` e `C13`) | `0.89 GB` |
+| Raios (`GLM`) | `0.03 GB` |
+| **Total com 1 município** | **`0.92 GB`** |
+| Baixando os arquivos inteiros | `32.9 GB` |
+
+- Cada município lê as próprias imagens, então cada um soma cerca de `0.9 GB/dia`. Com `5` municípios, conte com cerca de `4.5 GB/dia`.
+- O `GLM` é compartilhado e não aumenta com mais municípios.
+- O custo depende de quantas linhas o município ocupa na imagem, então municípios grandes consomem mais.
+- Os tamanhos variam com a estação e a nebulosidade. Considere esses números como ordem de grandeza.
+- Ao adicionar um município, o app lê a timeline dele de uma vez, sem tocar nos arquivos dos outros. De dia, cada quadro custa cerca de `10 MB`.
+- Depois de uma parada, o app recompõe os quadros que faltam, o que gera um pico temporário.
+
+## Armazenamento
+
+```text
+data_dir/
+├── raw/
+│   ├── visible/<area_id>/    # um GeoTIFF por slot de C02, por município
+│   ├── infrared/<area_id>/   # um GeoTIFF por slot de C13, por município
+│   └── lightning/            # um JSON por slot com os raios, compartilhado
+├── processed/<area_id>/      # quadros PNG renderizados
+└── geometry/                 # contornos dos municípios
+```
+
+- Cada município tem a própria pasta de imagens, e adicionar um novo não sobrescreve os arquivos dos outros.
+- Remover um município apaga as pastas dele e mantém as dos demais.
+- O app guarda apenas os quadros da timeline atual. Cada GeoTIFF ocupa cerca de `50 a 100 KB`.
+- `state_dir` guarda o `state.db`, que deve ficar em armazenamento confiável.
+- `scratch_dir` guarda temporários. Com a leitura parcial, ele é pouco usado.
+
+O arquivo final de cada município fica disponível em `media-source://media_source/local/goes_timelapse/<area_id>.webp`.
 
 ## Compatibilidade de arquitetura
 
@@ -69,7 +92,7 @@ Exemplos que não funcionam com o pacote atual:
 
 Para suportar esses cenários, seria necessário publicar builds ARM adicionais.
 
-## Recomendação de diretórios
+## Diretórios
 
 Padrão do add-on:
 
@@ -79,7 +102,7 @@ state_dir: /config/goes_timelapse/state
 scratch_dir: /data/goes_timelapse/tmp
 ```
 
-Recomendação para reduzir desgaste do SSD:
+Para guardar o cache em outro disco:
 
 ```yaml
 data_dir: /media/SEU_DISCO/goes_timelapse

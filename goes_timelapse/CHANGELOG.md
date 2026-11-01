@@ -1,5 +1,17 @@
 # Histórico de mudanças
 
+## Não lançado
+
+- Passa a ler por HTTP Range só as linhas de `C02` e `C13` que cobrem cada município e só as coordenadas dos raios do `GLM`, reduzindo o tráfego de cerca de `33 GB/dia` para cerca de `0.9 GB/dia` por município.
+- Guarda as imagens em uma pasta por município: adicionar um não altera os arquivos dos outros, e remover apaga só as pastas dele.
+- Remove o `Geo2Grid`/`polar2grid`; a conversão agora é própria e mantém o mesmo `GeoTIFF` e o mesmo realce.
+- Adicionar um município agora lê a timeline inteira dele, inclusive além das últimas `4` horas.
+- Lê as imagens com até `8` conexões em paralelo, reduzindo o tempo por imagem em municípios grandes.
+- Baixa os dados de raios com até `8` conexões em paralelo.
+- Registra métricas `METRIC` nos logs para recorte, ciclo de download, render e WebP.
+- Repete requisições após erros `429`, `500`, `502`, `503` e `504` da NOAA.
+- Confere a cada hora a leitura direta do `GLM` com a biblioteca `HDF5`; se divergirem ou a conferência falhar, para de ler raios e registra no log até voltarem a bater.
+
 ## 1.1.2
 
 - Reorganiza o código em módulos `core`, `data`, `pipeline` e `timeline`, reduzindo o acoplamento do runtime.

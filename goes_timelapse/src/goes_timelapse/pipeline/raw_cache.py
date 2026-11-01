@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 
 from goes_timelapse.core.config import Settings
 from goes_timelapse.core.logging_utils import TraceLogger, get_logger
@@ -31,12 +31,13 @@ def raw_files_for_source(settings: Settings, source_key: str) -> list[RawFileEnt
     entries: list[RawFileEntry] = []
     for file_path in files:
         stat = file_path.stat()
+        filename = file_path.relative_to(raw_dir).as_posix()
         entries.append(
             {
-                "filename": file_path.name,
+                "filename": filename,
                 "size_bytes": stat.st_size,
                 "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
-                "label": f"{file_path.name} ({RAW_SOURCE_LABELS[source_key]})",
+                "label": f"{filename} ({RAW_SOURCE_LABELS[source_key]})",
             }
         )
     return entries
@@ -67,12 +68,13 @@ def raw_disk_usage_bytes(settings: Settings, source_keys: tuple[str, ...]) -> in
 
 def available_raw_paths_by_source(
     settings: Settings,
+    area_id: str,
     is_valid_raw: Callable[[Path], bool],
 ) -> dict[str, dict[str, Path]]:
     paths_by_source: dict[str, dict[str, Path]] = {}
     for source_key in (RAW_SOURCE_VISIBLE, RAW_SOURCE_INFRARED):
         entries: dict[str, Path] = {}
-        for path in (settings.raw_dir / source_key).glob("*.tif"):
+        for path in (settings.raw_dir / source_key / area_id).glob("*.tif"):
             if not is_valid_raw(path):
                 continue
             entries[parse_goes_timestamp(path.name)] = path
@@ -136,7 +138,7 @@ def available_lightning_paths_by_timestamp(settings: Settings) -> dict[str, Path
 def prune_raw_cache(
     *,
     settings: Settings,
-    downloaders: dict[str, GoesDownloader | GlmDownloader],
+    downloaders: Mapping[str, GoesDownloader | GlmDownloader],
     source_keys: tuple[str, ...],
     keep_timestamps_by_source: dict[str, tuple[str, ...]],
     logger: TraceLogger,
@@ -203,12 +205,9 @@ def latest_kept_timestamp(paths: list[Path]) -> str | None:
 
 def raw_files_in_dir(raw_dir: Path, source_key: str) -> list[Path]:
     if source_key == RAW_SOURCE_LIGHTNING:
-        files = list(raw_dir.glob("*.json"))
-    else:
-        files = list(raw_dir.glob("*.tif"))
-    if files:
-        return files
-    return list(raw_dir.glob("*.nc"))
+        return list(raw_dir.glob("*.json"))
+    # Direct children are files from older versions; pruning clears them as they age out.
+    return [*raw_dir.rglob("*.tif"), *raw_dir.glob("*.nc")]
 
 
 def goes_timestamp_to_datetime(timestamp: str) -> datetime | None:
