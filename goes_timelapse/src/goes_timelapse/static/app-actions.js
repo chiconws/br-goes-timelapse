@@ -13,6 +13,7 @@
     app.setBasePath(document.documentElement.getAttribute("data-base-path") || "/");
 
     app.elements.statusGrid = document.getElementById("status-grid");
+    app.elements.serviceSummary = document.getElementById("service-summary");
     app.elements.searchInput = document.getElementById("area-search");
     app.elements.themeToggle = document.getElementById("theme-toggle");
     app.elements.searchFeedback = document.getElementById("search-feedback");
@@ -117,6 +118,12 @@
       return;
     }
 
+    if (action === "select") {
+      app.state.selectedAreaId = areaId;
+      app.renderTracked();
+      return;
+    }
+
     if (action === "remove") {
       removeTracked(areaId, button.getAttribute("data-display-name") || areaId, button);
       return;
@@ -204,7 +211,7 @@
       })
       .catch(function () {
         app.elements.trackedList.innerHTML =
-          '<p class="empty-state">Os municípios acompanhados estão indisponíveis no momento.</p>';
+          '<p class="viewer-empty">Não foi possível carregar os municípios. Verifique se o app está em execução.</p>';
       });
   }
 
@@ -223,7 +230,7 @@
       })
       .catch(function () {
         app.elements.downloadsList.innerHTML =
-          '<p class="empty-state">Os detalhes de download estão indisponíveis no momento.</p>';
+          '<p class="muted">Não foi possível carregar os downloads.</p>';
       });
   }
 
@@ -250,8 +257,9 @@
           return;
         }
 
+        app.elements.searchResults.hidden = false;
         app.elements.searchResults.innerHTML =
-          '<p class="empty-state">' + app.escapeHtml(error.message || "Busca indisponível.") + "</p>";
+          "<p>" + app.escapeHtml(error.message || "Busca indisponível.") + "</p>";
       });
   }
 
@@ -275,7 +283,11 @@
     })
       .then(function () {
         delete app.state.pendingPins[area.area_id];
-        setFeedback("success", area.display_name + " entrou na fila de renderização.");
+        app.state.selectedAreaId = area.area_id;
+        app.state.query = "";
+        app.state.searchResults = [];
+        app.elements.searchInput.value = "";
+        setFeedback("success", area.display_name + " adicionado. A animação fica pronta em alguns minutos.");
         return Promise.all([loadTracked(), loadStatus()]);
       })
       .catch(function (error) {
@@ -295,7 +307,7 @@
       method: "DELETE",
     })
       .then(function () {
-        setFeedback("success", displayName + " removida.");
+        setFeedback("success", displayName + " removido.");
         return Promise.all([loadTracked(), loadStatus()]);
       })
       .catch(function (error) {
@@ -433,10 +445,8 @@
         "aria-pressed",
         normalizedTheme === "dark" ? "true" : "false"
       );
-      app.elements.themeToggle.setAttribute(
-        "aria-label",
-        normalizedTheme === "dark" ? "Mudar para tema claro" : "Mudar para tema escuro"
-      );
+      app.elements.themeToggle.textContent =
+        normalizedTheme === "dark" ? "Tema claro" : "Tema escuro";
     }
 
     try {
