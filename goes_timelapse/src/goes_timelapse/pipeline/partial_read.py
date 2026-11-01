@@ -44,12 +44,14 @@ BTEMP_MIN = 163.0
 BTEMP_MAX = 330.0
 BTEMP_THRESHOLD_OUT = 176 / 255
 
-# Seen in every GLM-L2-LCFA file measured. Swapping these raises nothing.
+# Seen in every GLM-L2-LCFA file measured. Swapping these raises nothing, so
+# GlmDownloader compares the direct read with read_glm_flashes_with_hdf5 every hour.
 GLM_LAT_NODE = 139625
 GLM_LON_NODE = 120761
 GLM_NODE_SIZE = 2096
 GLM_NODE_MAX_ENTRIES = 64
 GLM_MERGE_GAP_BYTES = 4096
+GLM_CHECK_BLOCK_SIZE = 1 << 14
 
 BBox = tuple[float, float, float, float]
 
@@ -464,6 +466,16 @@ def _decode_glm_chunk(blob: bytes) -> np.ndarray:
         raise ValueError("Chunk GLM com tamanho inválido")
     # HDF5 shuffle stores byte 0 of every value first, then byte 1, and so on.
     return np.frombuffer(raw.reshape(4, -1).T.tobytes(), dtype="<f4")
+
+
+def read_glm_flashes_with_hdf5(url: str, *, user_agent: str) -> list[dict[str, float]]:
+    """Let libhdf5 find the columns itself, which the fixed GLM_*_NODE offsets cannot prove."""
+    remote = RangeFile(url, block_size=GLM_CHECK_BLOCK_SIZE, user_agent=user_agent)
+    try:
+        with h5py.File(remote, "r") as dataset:
+            return valid_flash_points(dataset["flash_lat"][:], dataset["flash_lon"][:])
+    finally:
+        remote.close()
 
 
 def valid_flash_points(latitudes, longitudes) -> list[dict[str, float]]:

@@ -26,6 +26,7 @@ from goes_timelapse.pipeline.partial_read import (
     decode_glm_chunks,
     glm_read_ranges,
     parse_glm_node,
+    read_glm_flashes_with_hdf5,
     valid_flash_points,
     write_abi_crop,
 )
@@ -41,6 +42,7 @@ GLM_LISTING_PREFIX_TEMPLATE = "{product}/{year}/{julian_day}/{hour}/OR_{product}
 DOWNLOAD_RETRY_ATTEMPTS = 5
 DOWNLOAD_CONCURRENCY = 2
 GLM_CONCURRENCY = 8
+GLM_LAYOUT_CHECK_SECONDS = 3600
 LOOKBACK_HOURS = 4
 REQUEST_HEADERS = {
     "Accept-Encoding": "identity",
@@ -461,6 +463,7 @@ class GlmDownloader:
         self._bytes_read = 0
         self._requests = 0
         self._retries = 0
+        self._layout_checked_at = float("-inf")
         self._key_pattern = re.compile(
             rf"(?P<key>{re.escape(GLM_PRODUCT_PREFIX)}/\d{{4}}/\d{{3}}/\d{{2}}/"
             rf"OR_{re.escape(GLM_PRODUCT_PREFIX)}_G19_"
@@ -543,6 +546,17 @@ class GlmDownloader:
                     last_downloaded=None,
                     latest_available=latest_slot_output,
                     failed_files=[],
+                )
+
+            if candidate_sources and not await self._layout_verified(session, candidate_sources[0]):
+                return DownloadReport(
+                    kept_files=self._kept_raws_on_disk(),
+                    downloaded_count=0,
+                    attempted_count=len(candidate_sources),
+                    failed_count=len(candidate_sources),
+                    last_downloaded=None,
+                    latest_available=latest_slot_output,
+                    failed_files=candidate_sources,
                 )
 
             download_semaphore = asyncio.Semaphore(GLM_CONCURRENCY)
@@ -720,6 +734,27 @@ class GlmDownloader:
             listing_seconds=listing_seconds,
             elapsed_seconds=perf_counter() - started_at,
         )
+
+    async def _layout_verified(self, session: SessionLike, filename: str) -> bool:
+        """False stops GLM until the check passes, since a moved node yields valid-looking flashes."""
+        if perf_counter() - self._layout_checked_at < GLM_LAYOUT_CHECK_SECONDS:
+            return True
+        source_key = self._source_key_for_filename(filename)
+        try:
+            direct = await self._read_flash_columns(session, source_key)
+            reference = await asyncio.to_thread(
+                read_glm_flashes_with_hdf5,
+                f"{self._base_url}{source_key}",
+                user_agent=REQUEST_HEADERS["User-Agent"],
+            )
+        except Exception as err:
+            LOGGER.warning("GLM layout check inconclusive for %s: %s", filename, err)
+            return True
+        if direct != reference:
+            LOGGER.error("GLM layout changed, stopping GLM reads: mismatch in %s", filename)
+            return False
+        self._layout_checked_at = perf_counter()
+        return True
 
     async def _read_flash_columns(
         self,

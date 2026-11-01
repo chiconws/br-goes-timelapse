@@ -686,6 +686,7 @@ class WebpBuilder:
             method=6,
             format="WEBP",
         )
+        byte_count = temporary_path.stat().st_size
         temporary_path.replace(output_path)
 
         for frame in frames:
@@ -696,7 +697,7 @@ class WebpBuilder:
             "METRIC webp area=%s frames=%s bytes=%s elapsed_s=%.2f",
             area_id,
             len(png_paths),
-            output_path.stat().st_size,
+            byte_count,
             perf_counter() - started_at,
         )
         return output_path
