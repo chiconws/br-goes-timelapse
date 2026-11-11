@@ -1,3 +1,5 @@
+"""Raster sources the renderer reads frames from."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -20,17 +22,23 @@ NETCDF_WGS84_OVERSAMPLE = 2
 
 
 class RasterSource(Protocol):
-    @property
-    def width(self) -> int: ...
+    """A georeferenced image the renderer can crop."""
 
     @property
-    def height(self) -> int: ...
+    def width(self) -> int:
+        """Width in pixels."""
 
     @property
-    def transform(self) -> Affine: ...
+    def height(self) -> int:
+        """Height in pixels."""
 
     @property
-    def crs(self) -> CRS: ...
+    def transform(self) -> Affine:
+        """Affine transform of the grid."""
+
+    @property
+    def crs(self) -> CRS:
+        """Coordinate reference system of the grid."""
 
     def read_image(
         self,
@@ -38,17 +46,22 @@ class RasterSource(Protocol):
         *,
         output_size: tuple[int, int] | None = None,
         dst_bounds: tuple[float, float, float, float] | None = None,
-    ) -> Image.Image: ...
+    ) -> Image.Image:
+        """Return the image reprojected to the destination bounds."""
 
-    def close(self) -> None: ...
+    def close(self) -> None:
+        """Release the underlying file."""
 
 
 @dataclass(slots=True)
 class GeoTiffRasterSource:
+    """Raster source backed by a cached GeoTIFF."""
+
     _dataset: rasterio.DatasetReader
     _vrt: WarpedVRT | None = None
 
     def __post_init__(self) -> None:
+        """Open the GeoTIFF."""
         dataset_crs = self._dataset.crs
         if dataset_crs and dataset_crs != WGS84_CRS:
             self._vrt = WarpedVRT(
@@ -57,22 +70,27 @@ class GeoTiffRasterSource:
 
     @property
     def dataset(self):
+        """Open rasterio dataset."""
         return self._vrt or self._dataset
 
     @property
     def width(self) -> int:
+        """Width in pixels."""
         return int(self.dataset.width)
 
     @property
     def height(self) -> int:
+        """Height in pixels."""
         return int(self.dataset.height)
 
     @property
     def transform(self) -> Affine:
+        """Affine transform of the grid."""
         return self.dataset.transform
 
     @property
     def crs(self) -> CRS:
+        """Coordinate reference system of the grid."""
         return self.dataset.crs or WGS84_CRS
 
     def read_image(
@@ -82,6 +100,7 @@ class GeoTiffRasterSource:
         output_size: tuple[int, int] | None = None,
         dst_bounds: tuple[float, float, float, float] | None = None,
     ) -> Image.Image:
+        """Return the image reprojected to the destination bounds."""
         dataset = self.dataset
         if output_size and dst_bounds:
             return self._read_reprojected_crop(window, output_size, dst_bounds)
@@ -116,6 +135,7 @@ class GeoTiffRasterSource:
         return Image.fromarray(grayscale, mode="L").convert("RGBA")
 
     def close(self) -> None:
+        """Close the dataset."""
         if self._vrt is not None:
             self._vrt.close()
         self._dataset.close()
@@ -263,25 +283,32 @@ class GeoTiffRasterSource:
 
 
 class GoesNetcdfRasterSource:
+    """Raster source backed by a GOES ABI netCDF file."""
+
     def __init__(self, path: Path):
+        """Open the netCDF file at path."""
         source_path = str(path).replace("\\", "/")
         self._cmi_dataset = rasterio.open(f"NETCDF:{source_path}:CMI")
         self._dqf_dataset = rasterio.open(f"NETCDF:{source_path}:DQF")
 
     @property
     def width(self) -> int:
+        """Width in pixels."""
         return int(self._cmi_dataset.width)
 
     @property
     def height(self) -> int:
+        """Height in pixels."""
         return int(self._cmi_dataset.height)
 
     @property
     def transform(self) -> Affine:
+        """Affine transform of the grid."""
         return self._cmi_dataset.transform
 
     @property
     def crs(self) -> CRS:
+        """Coordinate reference system of the grid."""
         return self._cmi_dataset.crs or WGS84_CRS
 
     def read_image(
@@ -291,6 +318,7 @@ class GoesNetcdfRasterSource:
         output_size: tuple[int, int] | None = None,
         dst_bounds: tuple[float, float, float, float] | None = None,
     ) -> Image.Image:
+        """Return the image reprojected to the destination bounds."""
         if output_size and dst_bounds:
             subset, dqf = self._read_reprojected_crop(window, output_size, dst_bounds)
         else:
@@ -305,6 +333,7 @@ class GoesNetcdfRasterSource:
         return Image.fromarray(grayscale, mode="L").convert("RGBA")
 
     def close(self) -> None:
+        """Close the netCDF file."""
         self._cmi_dataset.close()
         self._dqf_dataset.close()
 
@@ -378,6 +407,7 @@ class GoesNetcdfRasterSource:
 
 
 def open_raster_source(path: Path) -> RasterSource:
+    """Open a GeoTIFF or netCDF file as a raster source."""
     suffix = path.suffix.lower()
     if suffix == ".nc":
         return GoesNetcdfRasterSource(path)

@@ -1,3 +1,5 @@
+"""Runtime settings read from the add-on options."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -45,6 +47,8 @@ def _env_path(name: str, default: str) -> Path:
 
 @dataclass(slots=True, frozen=True)
 class Settings:
+    """Paths, limits and NOAA endpoints for one run of the app."""
+
     host: str
     port: int
     goes_url: str
@@ -80,6 +84,7 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> Settings:
+        """Build settings from the add-on options file and environment."""
         package_dir = Path(__file__).resolve().parent.parent
         data_dir = _env_path("GOES_DATA_DIR", "/data/goes_timelapse")
         state_dir = _env_path("GOES_STATE_DIR", "/config/goes_timelapse/state")
@@ -168,6 +173,7 @@ class Settings:
         )
 
     def ensure_directories(self) -> None:
+        """Create every data, state and output directory."""
         for directory in (
             self.data_dir,
             self.state_dir,
@@ -184,6 +190,7 @@ class Settings:
         self._cleanup_stale_temp_dirs()
 
     def configure_runtime_environment(self) -> None:
+        """Point temp files at the scratch directory."""
         scratch_dir = str(self.scratch_dir)
         os.environ["TMPDIR"] = scratch_dir
         os.environ["TMP"] = scratch_dir

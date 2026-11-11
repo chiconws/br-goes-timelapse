@@ -1,3 +1,5 @@
+"""Rebuild the bundled municipality catalog from IBGE data."""
+
 from __future__ import annotations
 
 import argparse
@@ -18,6 +20,7 @@ SUPPORTED_AREA_TYPES = frozenset({"municipio"})
 
 
 def normalize_text(value: str) -> str:
+    """Lowercase and strip accents for search."""
     normalized = unicodedata.normalize("NFKD", value)
     normalized = normalized.encode("ascii", "ignore").decode("ascii")
     normalized = re.sub(r"[^0-9a-z]+", " ", normalized.lower())
@@ -30,6 +33,7 @@ def build_area_catalog(
     population_source: str | Path | None,
     localidades_base_url: str = DEFAULT_LOCALIDADES_BASE_URL,
 ) -> list[dict[str, object]]:
+    """Build catalog entries from municipalities and population."""
     population_by_ibge = load_population_estimates(population_source)
     payloads = _load_localidades_payloads(localidades_base_url)
     rows = _build_area_rows(payloads, population_by_ibge=population_by_ibge)
@@ -38,6 +42,7 @@ def build_area_catalog(
 
 
 def load_population_estimates(source: str | Path | None) -> dict[str, int]:
+    """Load IBGE population estimates by municipality code."""
     if not source:
         return {}
 
@@ -175,6 +180,7 @@ def _write_rows(output_path: Path, rows: list[dict[str, object]]) -> None:
 
 
 def main() -> None:
+    """Write the catalog to the assets folder."""
     parser = argparse.ArgumentParser(description="Build GOES Timelapse area catalog.")
     parser.add_argument(
         "--output",

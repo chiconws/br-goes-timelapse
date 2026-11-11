@@ -1,3 +1,5 @@
+"""Municipality catalog and search."""
+
 from __future__ import annotations
 
 import gzip
@@ -17,6 +19,7 @@ AREA_TYPE_PRIORITY = {
 
 
 def normalize_text(value: str) -> str:
+    """Lowercase and strip accents for search."""
     normalized = unicodedata.normalize("NFKD", value)
     normalized = normalized.encode("ascii", "ignore").decode("ascii")
     normalized = re.sub(r"[^0-9a-z]+", " ", normalized.lower())
@@ -25,6 +28,7 @@ def normalize_text(value: str) -> str:
 
 
 def load_boundary_lines(path: Path) -> tuple[BoundaryLine, ...]:
+    """Load state boundary polylines from a gzipped GeoJSON."""
     with gzip.open(path, "rt", encoding="utf-8") as handle:
         raw_data = json.load(handle)
     return tuple(
@@ -55,7 +59,10 @@ def _coerce_float(value: object) -> float:
 
 
 class AreaCatalog:
+    """In-memory municipality catalog."""
+
     def __init__(self, areas: list[AreaCatalogEntry]):
+        """Index the given areas by id and search key."""
         filtered_areas = [
             area for area in areas if area.area_type in SUPPORTED_AREA_TYPES
         ]
@@ -72,6 +79,7 @@ class AreaCatalog:
 
     @classmethod
     def from_path(cls, path: Path) -> AreaCatalog:
+        """Load the catalog from a gzipped JSON file."""
         with gzip.open(path, "rt", encoding="utf-8") as handle:
             raw_data = json.load(handle)
         areas = [
@@ -98,9 +106,11 @@ class AreaCatalog:
         return cls(areas)
 
     def get(self, area_id: str) -> AreaCatalogEntry | None:
+        """Return the area with this id, or None."""
         return self._by_id.get(area_id)
 
     def search(self, query: str, limit: int = 20) -> list[AreaCatalogEntry]:
+        """Return areas whose name matches the query, best first."""
         cleaned_query = normalize_text(query)
         if not cleaned_query:
             return self._areas[:limit]

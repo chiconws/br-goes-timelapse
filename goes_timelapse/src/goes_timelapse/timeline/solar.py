@@ -1,3 +1,5 @@
+"""Sunrise and sunset windows that pick visible or infrared frames."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,6 +13,8 @@ DEFAULT_TRANSITION_BLEND_WEIGHTS = (0.2, 0.4, 0.6, 0.8)
 
 @dataclass(slots=True, frozen=True)
 class SolarWindow:
+    """Visible-light window of one day at one place."""
+
     is_open: bool
     window_start: datetime
     window_end: datetime
@@ -25,6 +29,7 @@ def visible_window_for_day(
     day: date,
     margin_hours: int,
 ) -> SolarWindow:
+    """Return the visible window for a day at a location."""
     observer = Observer(latitude=latitude, longitude=longitude)
     solar_times = sun(observer, date=day, tzinfo=UTC)
     margin = timedelta(hours=margin_hours)
@@ -46,6 +51,7 @@ def is_within_visible_window(
     moment_utc: datetime,
     margin_hours: int,
 ) -> SolarWindow:
+    """Return whether a moment falls in the visible window."""
     if moment_utc.tzinfo is None:
         moment_utc = moment_utc.replace(tzinfo=UTC)
     else:
@@ -75,6 +81,7 @@ def sunset_transition_slots(
     frame_count: int = len(DEFAULT_TRANSITION_BLEND_WEIGHTS),
     slot_minutes: int = 10,
 ) -> tuple[datetime, ...]:
+    """Return the slots of the sunset crossfade."""
     window = visible_window_for_day(
         longitude=longitude,
         latitude=latitude,
@@ -96,6 +103,7 @@ def sunrise_transition_slots(
     frame_count: int = len(DEFAULT_TRANSITION_BLEND_WEIGHTS),
     slot_minutes: int = 10,
 ) -> tuple[datetime, ...]:
+    """Return the slots of the sunrise crossfade."""
     window = visible_window_for_day(
         longitude=longitude,
         latitude=latitude,
@@ -117,6 +125,7 @@ def sunset_transition_alpha(
     blend_weights: tuple[float, ...] = DEFAULT_TRANSITION_BLEND_WEIGHTS,
     slot_minutes: int = 10,
 ) -> float | None:
+    """Return the crossfade weight at a sunset slot, or None outside it."""
     if moment_utc.tzinfo is None:
         moment_utc = moment_utc.replace(tzinfo=UTC)
     else:
@@ -144,6 +153,7 @@ def sunrise_transition_alpha(
     blend_weights: tuple[float, ...] = DEFAULT_TRANSITION_BLEND_WEIGHTS,
     slot_minutes: int = 10,
 ) -> float | None:
+    """Return the crossfade weight at a sunrise slot, or None outside it."""
     if moment_utc.tzinfo is None:
         moment_utc = moment_utc.replace(tzinfo=UTC)
     else:

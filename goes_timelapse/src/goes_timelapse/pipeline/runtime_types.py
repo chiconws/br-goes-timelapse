@@ -1,3 +1,5 @@
+"""Typed records shared by the refresh pipeline."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -25,6 +27,8 @@ STAGING_BLOCKING_FREE_BYTES = 2 * 1024 * 1024 * 1024
 
 @dataclass(slots=True, frozen=True)
 class DownloadSourcePlan:
+    """What one source should download this cycle, and why."""
+
     source_key: str
     source_label: str
     tracked_area_ids: tuple[str, ...]
@@ -35,6 +39,8 @@ class DownloadSourcePlan:
 
 @dataclass(slots=True, frozen=True)
 class StorageCheck:
+    """Free space on one storage path."""
+
     key: str
     label: str
     path: Path
@@ -45,6 +51,8 @@ class StorageCheck:
 
 
 class ActiveDownloadEntry(TypedDict):
+    """Progress of one file being downloaded."""
+
     filename: str
     downloaded_bytes: int
     total_bytes: int | None
@@ -53,6 +61,8 @@ class ActiveDownloadEntry(TypedDict):
 
 
 class SourceDownloadStatus(TypedDict):
+    """Download state of one source."""
+
     source_key: str
     phase: str
     attempted_count: int
@@ -68,6 +78,8 @@ class SourceDownloadStatus(TypedDict):
 
 
 class RawFileEntry(TypedDict):
+    """A cached raw file with its timestamp."""
+
     filename: str
     size_bytes: int
     modified_at: str
@@ -75,11 +87,15 @@ class RawFileEntry(TypedDict):
 
 
 class GlmFlashPoint(TypedDict):
+    """One GLM flash position."""
+
     lat: float
     lon: float
 
 
 class GlmSlotRecord(TypedDict):
+    """Flashes aggregated for one GLM slot."""
+
     slot_timestamp: str
     source_filenames: list[str]
     flashes: list[GlmFlashPoint]

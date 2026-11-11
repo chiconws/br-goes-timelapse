@@ -1,3 +1,5 @@
+"""SQLite store for tracked municipalities."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -18,7 +20,10 @@ RETRYABLE_SQLITE_ERRORS = (
 
 
 class StateStore:
+    """Persist tracked municipalities, their status and markers."""
+
     def __init__(self, db_path: Path):
+        """Open the database at db_path and create missing tables."""
         self._db_path = db_path
         self._lock = threading.RLock()
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -26,6 +31,7 @@ class StateStore:
         self._initialize()
 
     def close(self) -> None:
+        """Close the database connection."""
         with self._lock:
             self._connection.close()
 
@@ -144,11 +150,13 @@ class StateStore:
         )
 
     def count_tracked(self) -> int:
+        """Return how many municipalities are tracked."""
         with self._lock:
             cursor = self._connection.execute("SELECT COUNT(*) FROM tracked_areas")
             return int(cursor.fetchone()[0])
 
     def list_tracked(self) -> list[TrackedArea]:
+        """Return every tracked municipality."""
         with self._lock:
             cursor = self._connection.execute(
                 """
@@ -162,6 +170,7 @@ class StateStore:
             return [self._row_to_tracked(row) for row in cursor.fetchall()]
 
     def get_tracked(self, area_id: str) -> TrackedArea | None:
+        """Return one tracked municipality, or None."""
         with self._lock:
             cursor = self._connection.execute(
                 """
@@ -179,6 +188,7 @@ class StateStore:
             return self._row_to_tracked(row)
 
     def tracked_ids(self) -> list[str]:
+        """Return the ids of tracked municipalities."""
         with self._lock:
             cursor = self._connection.execute(
                 "SELECT area_id FROM tracked_areas ORDER BY tracked_at ASC"
@@ -186,9 +196,11 @@ class StateStore:
             return [str(row[0]) for row in cursor.fetchall()]
 
     def is_tracked(self, area_id: str) -> bool:
+        """Return whether area_id is tracked."""
         return self.get_tracked(area_id) is not None
 
     def upsert_tracked(self, area: AreaCatalogEntry, status: str = "queued") -> None:
+        """Track a municipality, or refresh its catalog fields."""
         now = self._now()
         existing = self.get_tracked(area.area_id)
         tracked_at = existing.tracked_at if existing is not None else now
@@ -229,6 +241,7 @@ class StateStore:
         self._run_write(operation)
 
     def remove_tracked(self, area_id: str) -> None:
+        """Stop tracking a municipality."""
         self._run_write(
             lambda: self._connection.execute(
                 "DELETE FROM tracked_areas WHERE area_id = ?",
@@ -246,6 +259,7 @@ class StateStore:
         media_path: str | None = None,
         snippet_path: str | None = None,
     ) -> None:
+        """Update the status, message and outputs of a tracked municipality."""
         updates = {
             "status": status,
             "updated_at": self._now(),
@@ -275,6 +289,7 @@ class StateStore:
         marker_lat: float | None,
         marker_lon: float | None,
     ) -> None:
+        """Set or clear the marker of a tracked municipality."""
         self._run_write(
             lambda: self._connection.execute(
                 """
