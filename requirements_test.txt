@@ -1,0 +1,15 @@
+# Runtime deps of the add-on image, plus the test and lint toolchain.
+# Tool pins follow the shared toolchain; bump them together.
+-r goes_timelapse/requirements.txt
+coverage>=7.10,<8.0
+mypy==2.4.1
+prek==0.5.7
+pyright==1.1.414
+pytest>=8.3,<9.0
+pytest-asyncio>=0.25,<1.0
+ruff==0.17.3
+# project-specific
+httpx>=0.28,<1.0
+odfpy>=1.4,<2.0
+pandas>=2.2,<3.0
+netCDF4>=1.7,<2.0

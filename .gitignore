@@ -1,34 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# Tooling caches / coverage
+.mypy_cache/
 .pytest_cache/
 .ruff_cache/
-.mypy_cache/
-.venv/
 .coverage
 .coverage.*
 htmlcov/
-build/
-dist/
-*.egg-info/
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.log
+
+# Local-only dev files (never commit credentials)
+.vscode/
+.claude/settings.local.json
+*.local.json
+
+# OS / IDE
 .idea/
-/tests-output/
-/tmp/
-/tmp_test_settings/
-/tmp_test_settings2/
-/coverage/
-/site/
-/shapefiles/
-/devtools/
-/.vscode/
+.DS_Store
+Thumbs.db
+
+# project-specific
+*.log
+/.agents/
 /.tmp/
-/goes_timelapse/.mypy_cache/
-/goes_timelapse/.pytest_cache/
+/tmp/
+/devtools/
 /data/
 /media/
 /config/
-/tests/
-/scripts/
-/pyproject.toml
+/shapefiles/
