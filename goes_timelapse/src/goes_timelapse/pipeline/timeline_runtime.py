@@ -1,3 +1,5 @@
+"""Timeline plans and frame specs for the refresh loop."""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -27,6 +29,7 @@ LOGGER = get_logger(__name__)
 
 
 def timeline_reference_moment() -> datetime:
+    """Return the current UTC time the timeline is built from."""
     return floor_to_slot(
         datetime.now(UTC) - timedelta(minutes=SLOT_MINUTES),
         slot_minutes=SLOT_MINUTES,
@@ -40,6 +43,7 @@ def build_area_timeline_plan_for_area(
     resolve_area_centroid: Callable[[AreaCatalogEntry], tuple[float, float]],
     reference_moment: datetime | None = None,
 ) -> AreaTimelinePlan:
+    """Build the timeline plan of one municipality."""
     reference_moment = reference_moment or timeline_reference_moment()
     centroid = resolve_area_centroid(area)
     plan = build_area_timeline_plan(
@@ -70,6 +74,7 @@ def build_global_target_timestamps(
     ],
     reference_moment: datetime | None = None,
 ) -> dict[str, tuple[str, ...]]:
+    """Return the slots each source needs across all municipalities."""
     targets: dict[str, set[str]] = {
         RAW_SOURCE_VISIBLE: set(),
         RAW_SOURCE_INFRARED: set(),
@@ -109,6 +114,7 @@ def build_download_plan_reason(
     tracked_area_ids: tuple[str, ...],
     target_timestamps: tuple[str, ...],
 ) -> str:
+    """Explain in the UI why a source is or is not downloading."""
     if not tracked_area_ids:
         return "Nenhum município acompanhado"
     if not target_timestamps:
@@ -124,6 +130,7 @@ def build_download_plan_reason(
 
 
 def source_short_label(source_key: str) -> str:
+    """Return the short UI label of a source."""
     return {
         RAW_SOURCE_VISIBLE: "B2",
         RAW_SOURCE_INFRARED: "B13",
@@ -138,6 +145,7 @@ def build_frame_specs_from_timeline(
     source_paths: dict[str, dict[str, Path]],
     lightning_points_by_timestamp: dict[str, tuple[tuple[float, float], ...]],
 ) -> list[FrameSpec]:
+    """Turn a timeline plan into frame specs with cached files."""
     timeline_plan = build_area_timeline(area)
     frame_specs: list[FrameSpec] = []
     imagery_paths = {

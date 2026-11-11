@@ -1,3 +1,5 @@
+"""NOAA listing and partial downloads of ABI imagery and GLM flashes."""
+
 from __future__ import annotations
 
 import asyncio
@@ -70,10 +72,15 @@ S3_XML_NAMESPACE = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
 
 
 class SessionLike(Protocol):
-    def get(self, url: Any, **kwargs: Any) -> Any: ...
+    """Minimal aiohttp session interface used by the downloaders."""
+
+    def get(self, url: Any, **kwargs: Any) -> Any:
+        """Start a GET request."""
 
 
 class GlmSlotRecord(TypedDict):
+    """Flashes aggregated for one GLM slot."""
+
     slot_timestamp: str
     source_filenames: list[str]
     flashes: list[dict[str, float]]
@@ -81,6 +88,8 @@ class GlmSlotRecord(TypedDict):
 
 @dataclass(slots=True)
 class DownloadReport:
+    """Outcome of one refresh of a source."""
+
     kept_files: list[Path]
     downloaded_count: int
     attempted_count: int
@@ -97,12 +106,16 @@ class DownloadReport:
 
 @dataclass(slots=True, frozen=True)
 class AreaCrop:
+    """Destination crop of one municipality."""
+
     area_id: str
     bounds: BBox
     target_timestamps: tuple[str, ...]
 
 
 class GoesDownloader:
+    """Read the rows of ABI C02/C13 that cover each municipality."""
+
     def __init__(
         self,
         base_url: str,
@@ -112,6 +125,7 @@ class GoesDownloader:
         band: str = "C02",
         progress_callback: Callable[[dict[str, object]], None] | None = None,
     ):
+        """Configure the product, cache directory and limits."""
         self._base_url = base_url.rstrip("/") + "/"
         self._raw_dir = raw_dir
         self._raw_history = raw_history
@@ -126,12 +140,15 @@ class GoesDownloader:
         self._raw_dir.mkdir(parents=True, exist_ok=True)
 
     def output_filename(self, source_filename: str) -> str:
+        """Return the cached file name for a NOAA file name."""
         return f"{Path(source_filename).stem}.tif"
 
     def source_filename(self, output_filename: str) -> str:
+        """Return the NOAA file name for a cached file name."""
         return f"{Path(output_filename).stem}.nc"
 
     def parse_listing(self, xml_payload: str) -> list[str]:
+        """Return the product file names in an S3 listing."""
         root = ET.fromstring(xml_payload)
         keys: list[tuple[str, str]] = []
         for node in root.findall("s3:Contents", S3_XML_NAMESPACE):
@@ -153,6 +170,7 @@ class GoesDownloader:
         target_timestamps: tuple[str, ...] | None = None,
         areas: tuple[AreaCrop, ...] = (),
     ) -> DownloadReport:
+        """Fetch the missing slots for every crop."""
         started_at = perf_counter()
         connector = aiohttp.TCPConnector(
             limit=DOWNLOAD_CONCURRENCY, family=socket.AF_INET
@@ -465,6 +483,8 @@ class GoesDownloader:
 
 
 class GlmDownloader:
+    """Read GLM flash coordinates and aggregate them per slot."""
+
     def __init__(
         self,
         base_url: str,
@@ -473,6 +493,7 @@ class GlmDownloader:
         *,
         progress_callback: Callable[[dict[str, object]], None] | None = None,
     ):
+        """Configure the cache directory and limits."""
         self._base_url = base_url.rstrip("/") + "/"
         self._raw_dir = raw_dir
         self._raw_history = raw_history
@@ -489,12 +510,14 @@ class GlmDownloader:
         self._raw_dir.mkdir(parents=True, exist_ok=True)
 
     def output_filename(self, source_filename: str) -> str:
+        """Return the cached slot file name for a NOAA file name."""
         slot_timestamp = self._slot_timestamp_for_source(source_filename)
         if slot_timestamp is None:
             raise ValueError(f"Cannot derive GLM slot for {source_filename}")
         return f"{slot_timestamp}_glm.json"
 
     def parse_listing(self, xml_payload: str) -> list[str]:
+        """Return the GLM file names in an S3 listing."""
         root = ET.fromstring(xml_payload)
         keys: list[tuple[str, str]] = []
         for node in root.findall("s3:Contents", S3_XML_NAMESPACE):
@@ -515,6 +538,7 @@ class GlmDownloader:
         download_missing: bool = True,
         target_timestamps: tuple[str, ...] | None = None,
     ) -> DownloadReport:
+        """Fetch and aggregate flashes for the missing slots."""
         started_at = perf_counter()
         connector = aiohttp.TCPConnector(limit=GLM_CONCURRENCY, family=socket.AF_INET)
         self._bytes_read = 0
@@ -1096,6 +1120,7 @@ def _slot_timestamp_for_output_filename(filename: str) -> str | None:
 
 
 def parse_goes_slot_prefix(filename: str) -> str | None:
+    """Return the slot timestamp of a GOES file name, or None."""
     prefix = Path(filename).name.split("_", 1)[0]
     if len(prefix) < 11 or not prefix[:11].isdigit():
         return None

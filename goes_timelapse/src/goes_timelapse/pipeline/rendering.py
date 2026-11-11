@@ -1,3 +1,5 @@
+"""Frame rendering and WebP animation output."""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -29,6 +31,8 @@ LOGGER = get_logger(__name__)
 
 @dataclass(slots=True, frozen=True)
 class RenderPlan:
+    """Frames and overlays to render for one municipality."""
+
     window: Window
     dst_bounds: tuple[float, float, float, float]
     scaled_polygon: tuple[tuple[float, float], ...]
@@ -39,6 +43,8 @@ class RenderPlan:
 
 @dataclass(slots=True, frozen=True)
 class FrameSpec:
+    """Sources and blend of one output frame."""
+
     timestamp: str
     primary_path: Path
     blend_path: Path | None = None
@@ -47,6 +53,7 @@ class FrameSpec:
 
 
 def parse_goes_timestamp(filename: str) -> str:
+    """Return the start timestamp of a GOES file name."""
     name = Path(filename).name
     legacy_match = LEGACY_TIMESTAMP_PATTERN.match(name)
     if legacy_match:
@@ -60,6 +67,7 @@ def parse_goes_timestamp(filename: str) -> str:
 
 
 def format_capture_time(filename: str) -> str:
+    """Format a GOES file's start time for the frame label."""
     timestamp = parse_goes_timestamp(filename)
     if len(timestamp) < 11:
         return "Unknown capture time"
@@ -75,7 +83,10 @@ def format_capture_time(filename: str) -> str:
 
 
 class AreaRenderer:
+    """Render a municipality's frames to PNG."""
+
     def __init__(self, settings: Settings):
+        """Store settings and load the state boundary overlay."""
         self._settings = settings
         self._font_cache: dict[int, ImageFont.FreeTypeFont | ImageFont.ImageFont] = {}
         try:
@@ -93,6 +104,7 @@ class AreaRenderer:
         *,
         marker_coordinates: tuple[float, float] | None = None,
     ) -> list[Path]:
+        """Render the planned frames, reusing those already on disk."""
         frame_specs = self._coerce_frame_specs(frame_inputs)[
             -self._settings.frame_count :
         ]
@@ -174,6 +186,7 @@ class AreaRenderer:
         return digest[:12]
 
     def cleanup(self, area_id: str) -> None:
+        """Delete a municipality's rendered frames."""
         output_dir = self._settings.processed_dir / area_id
         if not output_dir.exists():
             return
@@ -503,6 +516,7 @@ class AreaRenderer:
     def destination_bounds(
         self, geometry: AreaGeometry
     ) -> tuple[float, float, float, float]:
+        """Return the lon/lat box framed around the municipality."""
         min_lon, min_lat, max_lon, max_lat = geometry.bounds
         centroid_lon, centroid_lat = geometry.centroid
         base_span = max(max_lon - min_lon, max_lat - min_lat)
@@ -677,10 +691,14 @@ class AreaRenderer:
 
 
 class WebpBuilder:
+    """Assemble rendered frames into an animated WebP."""
+
     def __init__(self, settings: Settings):
+        """Store settings."""
         self._settings = settings
 
     def build(self, area_id: str, png_paths: list[Path]) -> Path:
+        """Write the animation for an area and return its path."""
         started_at = perf_counter()
         output_path = self._settings.media_dir / f"{area_id}.webp"
         duration_ms = max(100, round(1000 / self._settings.gif_fps))
@@ -730,6 +748,7 @@ GifBuilder = WebpBuilder
 def write_lovelace_snippet(
     snippets_dir: Path, area: AreaCatalogEntry, area_id: str
 ) -> Path:
+    """Write a picture-card YAML snippet for the area."""
     snippet_path = snippets_dir / f"{area_id}.yaml"
     snippet = (
         f"# {area.display_name}\n"

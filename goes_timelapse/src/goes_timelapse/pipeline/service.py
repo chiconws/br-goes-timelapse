@@ -1,3 +1,5 @@
+"""Refresh loop: plan, download, render and publish per municipality."""
+
 from __future__ import annotations
 
 import asyncio
@@ -72,6 +74,8 @@ LOGGER = get_logger(__name__)
 
 
 class DownloadSourceSnapshot(TypedDict):
+    """Download state of one source for the UI."""
+
     source_key: str
     source_label: str
     phase: str
@@ -93,10 +97,14 @@ class DownloadSourceSnapshot(TypedDict):
 
 
 class DownloadsSnapshot(TypedDict):
+    """Download state of every source for the UI."""
+
     sources: list[DownloadSourceSnapshot]
 
 
 class GoesTimelapseService:
+    """Run the refresh loop and serve the API's operations."""
+
     def __init__(
         self,
         settings: Settings,
@@ -106,6 +114,7 @@ class GoesTimelapseService:
         geometry_store: IbgeGeometryStore | None = None,
         start_background_tasks: bool = True,
     ):
+        """Wire settings, state, catalog and downloaders."""
         self.settings = settings
         self.catalog = catalog
         self.state_store = state_store
@@ -165,6 +174,7 @@ class GoesTimelapseService:
         self._started_at = perf_counter()
 
     async def start(self) -> None:
+        """Start the background refresh and render tasks."""
         self.settings.ensure_directories()
         self.settings.configure_runtime_environment()
         LOGGER.info(
@@ -208,6 +218,7 @@ class GoesTimelapseService:
             )
 
     async def stop(self) -> None:
+        """Cancel the background tasks and close sessions."""
         if self._immediate_refresh_task is not None:
             self._immediate_refresh_task.cancel()
             try:
@@ -224,6 +235,7 @@ class GoesTimelapseService:
         self.state_store.close()
 
     async def add_tracked(self, area_id: str) -> TrackedArea:
+        """Track a municipality and queue its first render."""
         area = self.catalog.get(area_id)
         if area is None:
             raise KeyError(area_id)
@@ -248,6 +260,7 @@ class GoesTimelapseService:
         return tracked
 
     async def remove_tracked(self, area_id: str) -> None:
+        """Stop tracking a municipality and delete its files."""
         self.state_store.remove_tracked(area_id)
         self._queued_ids.discard(area_id)
         self._cleanup_area_files(area_id)
@@ -259,6 +272,7 @@ class GoesTimelapseService:
         marker_lat: float,
         marker_lon: float,
     ) -> TrackedArea:
+        """Set a municipality's marker and re-render it."""
         tracked = self.state_store.get_tracked(area_id)
         if tracked is None:
             raise KeyError(area_id)
@@ -284,6 +298,7 @@ class GoesTimelapseService:
         return updated
 
     async def clear_marker(self, area_id: str) -> TrackedArea:
+        """Remove a municipality's marker and re-render it."""
         tracked = self.state_store.get_tracked(area_id)
         if tracked is None:
             raise KeyError(area_id)
@@ -300,6 +315,7 @@ class GoesTimelapseService:
         return updated
 
     async def enqueue(self, area_id: str) -> None:
+        """Queue a municipality for rendering."""
         if not self.state_store.is_tracked(area_id):
             return
         if area_id in self._queued_ids:
@@ -308,21 +324,26 @@ class GoesTimelapseService:
         await self._queue.put(area_id)
 
     def tracked(self) -> list[TrackedArea]:
+        """Return the tracked municipalities."""
         return self.state_store.list_tracked()
 
     def search(self, query: str) -> list[AreaCatalogEntry]:
+        """Search the municipality catalog."""
         return self.catalog.search(query)
 
     def snippet_text(self, area_id: str) -> str:
+        """Return the Lovelace snippet for a municipality."""
         snippet_path = self.settings.snippets_dir / f"{area_id}.yaml"
         if not snippet_path.exists():
             raise FileNotFoundError(area_id)
         return snippet_path.read_text(encoding="utf-8")
 
     def media_path(self, area_id: str) -> Path:
+        """Return the published WebP path for a municipality."""
         return self.settings.media_dir / f"{area_id}.webp"
 
     def status_snapshot(self) -> dict[str, object]:
+        """Return the service status shown in the UI."""
         files = self._all_raw_files()
         raw_disk_bytes = self._raw_disk_usage_bytes()
         storage_checks = self._storage_checks()
@@ -356,6 +377,7 @@ class GoesTimelapseService:
         }
 
     def downloads_snapshot(self) -> DownloadsSnapshot:
+        """Return the download status shown in the UI."""
         sources: list[DownloadSourceSnapshot] = []
         for source_key in (
             RAW_SOURCE_VISIBLE,
@@ -400,6 +422,7 @@ class GoesTimelapseService:
             await asyncio.sleep(poll_seconds)
 
     async def refresh_raw_frames(self) -> None:
+        """Download the missing raw frames of every source."""
         async with self._refresh_lock:
             self._status["last_poll_started_at"] = _utc_now()
             self._status["last_poll_error"] = None

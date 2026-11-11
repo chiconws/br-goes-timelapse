@@ -1,3 +1,5 @@
+"""Download status texts shown in the UI."""
+
 from __future__ import annotations
 
 from goes_timelapse.pipeline.runtime_types import SourceDownloadStatus
@@ -8,6 +10,7 @@ def build_source_download_summary(
     *,
     raw_frame_count: int,
 ) -> str:
+    """Summarise one source's download progress for the UI."""
     phase = status["phase"] or "idle"
     attempted = status["attempted_count"]
     completed = status["completed_count"]
@@ -41,6 +44,7 @@ def build_source_download_summary(
 
 
 def build_initial_download_status(source_key: str) -> SourceDownloadStatus:
+    """Return the idle status for a source."""
     return {
         "source_key": source_key,
         "phase": "disabled",
@@ -58,6 +62,7 @@ def build_initial_download_status(source_key: str) -> SourceDownloadStatus:
 
 
 def download_phase_label(phase: str) -> str:
+    """Translate a download phase to its UI label."""
     mapping = {
         "disabled": "desativado",
         "paused": "pausado",
@@ -72,4 +77,5 @@ def download_phase_label(phase: str) -> str:
 
 
 def pluralize_slot(count: int) -> str:
+    """Return 'slot' or 'slots' for count."""
     return "slot" if count == 1 else "slots"

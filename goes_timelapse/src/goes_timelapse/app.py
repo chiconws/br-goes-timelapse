@@ -1,3 +1,5 @@
+"""FastAPI app: HTTP API and static UI served through ingress."""
+
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -21,6 +23,8 @@ STATIC_STYLES_ROUTE = f"/static/styles-{STATIC_ASSET_VERSION}.css"
 
 
 class MarkerPayload(BaseModel):
+    """Request body for setting a municipality marker."""
+
     lat: float
     lon: float
 
@@ -30,6 +34,7 @@ def create_app(
     *,
     start_background_tasks: bool = True,
 ) -> FastAPI:
+    """Build the FastAPI app and, optionally, start the refresh service."""
     app_settings = settings or Settings.from_env()
     configure_logging(app_settings.log_level)
     static_dir = Path(__file__).resolve().parent / "static"
@@ -290,6 +295,7 @@ def create_app(
 
 
 def main() -> None:
+    """Start uvicorn with the app on the ingress port."""
     settings = Settings.from_env()
     configure_logging(settings.log_level)
     uvicorn.run(

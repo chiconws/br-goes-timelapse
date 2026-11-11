@@ -1,3 +1,5 @@
+"""Logging setup with a TRACE level and colored severities."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -27,7 +29,10 @@ LEVEL_NAMES: Final[dict[str, int]] = {
 
 
 class SeverityColorFormatter(logging.Formatter):
+    """Formatter that colors the line prefix by severity."""
+
     def format(self, record: logging.LogRecord) -> str:
+        """Render a record with timestamp, level, logger name and traceback."""
         message = record.getMessage()
         timestamp = self.formatTime(record, self.datefmt)
         color = LEVEL_COLORS.get(record.levelno, "")
@@ -44,7 +49,10 @@ class SeverityColorFormatter(logging.Formatter):
 
 
 class TraceLogger(logging.Logger):
-    def trace(self, message: str, *args: object, **kwargs: object) -> None: ...
+    """Logger type that exposes the TRACE level."""
+
+    def trace(self, message: str, *args: object, **kwargs: object) -> None:
+        """Log a message at TRACE level."""
 
 
 def _logger_trace(
@@ -75,6 +83,7 @@ def _module_trace(message: str, *args: object, **kwargs: object) -> None:
 
 
 def register_trace_level() -> None:
+    """Register TRACE with the logging module once."""
     if getattr(logging, TRACE_LEVEL_NAME, None) != TRACE_LEVEL:
         setattr(logging, TRACE_LEVEL_NAME, TRACE_LEVEL)
     logging.addLevelName(TRACE_LEVEL, TRACE_LEVEL_NAME)
@@ -87,11 +96,13 @@ def register_trace_level() -> None:
 
 
 def get_logger(name: str) -> TraceLogger:
+    """Return a logger typed with the trace method."""
     register_trace_level()
     return cast(TraceLogger, logging.getLogger(name))
 
 
 def resolve_log_level(value: str | int | None, default: int = logging.INFO) -> int:
+    """Map an option value (name or number) to a logging level."""
     register_trace_level()
     if isinstance(value, int):
         return value
@@ -106,6 +117,7 @@ def resolve_log_level(value: str | int | None, default: int = logging.INFO) -> i
 
 
 def configure_logging(level: int) -> None:
+    """Install the colored handler on the root logger."""
     register_trace_level()
 
     handler = logging.StreamHandler(sys.stdout)

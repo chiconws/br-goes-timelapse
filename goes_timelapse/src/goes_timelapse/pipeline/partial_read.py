@@ -1,3 +1,5 @@
+"""HTTP Range reads of the parts of NOAA netCDF files that are needed."""
+
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -57,6 +59,8 @@ BBox = tuple[float, float, float, float]
 
 @dataclass(slots=True)
 class CropStats:
+    """Bytes, requests and timings of one partial read."""
+
     bytes_read: int = 0
     requests: int = 0
     retries: int = 0
@@ -73,6 +77,7 @@ class RangeFile(io.RawIOBase):
     """Read-only file over HTTP Range for h5py, counting what crosses the wire."""
 
     def __init__(self, url: str, *, block_size: int, user_agent: str):
+        """Prepare connections for url, reading block_size bytes at a time."""
         self._parts = urlsplit(url)
         self._block_size = block_size
         self._headers = {"User-Agent": user_agent, "Accept-Encoding": "identity"}
@@ -146,6 +151,7 @@ class RangeFile(io.RawIOBase):
                 self._connections.discard(connection)
 
     def close(self) -> None:
+        """Close every pooled connection."""
         self._pool.shutdown()
         for connection in self._connections:
             connection.close()
@@ -153,15 +159,19 @@ class RangeFile(io.RawIOBase):
         super().close()
 
     def readable(self) -> bool:
+        """Return True: the file can be read."""
         return True
 
     def seekable(self) -> bool:
+        """Return True: the file can seek."""
         return True
 
     def tell(self) -> int:
+        """Return the current position."""
         return self._position
 
     def seek(self, offset: int, whence: int = 0) -> int:
+        """Move the position like io.RawIOBase.seek."""
         self._position = {0: offset, 1: self._position + offset, 2: self.size + offset}[
             whence
         ]
@@ -194,6 +204,7 @@ class RangeFile(io.RawIOBase):
         return self._blocks[index]
 
     def readinto(self, buffer) -> int:
+        """Fill buffer from the current position."""
         count = min(len(buffer), max(self.size - self._position, 0))
         done = 0
         while done < count:
@@ -496,6 +507,7 @@ def decode_glm_chunks(
     chunks: list[tuple[int, int]],
     ranges: dict[tuple[int, int], bytes],
 ) -> np.ndarray:
+    """Decompress and join the HDF5 chunks of a GLM variable."""
     values: list[np.ndarray] = []
     for address, size in chunks:
         start, end = next(
@@ -528,6 +540,7 @@ def read_glm_flashes_with_hdf5(url: str, *, user_agent: str) -> list[dict[str, f
 
 
 def valid_flash_points(latitudes, longitudes) -> list[dict[str, float]]:
+    """Return the finite flash coordinates as points."""
     return [
         {"lat": latitude, "lon": longitude}
         for latitude, longitude in zip(

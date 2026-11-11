@@ -1,3 +1,5 @@
+"""Domain models for municipalities, geometry and tracked areas."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -10,12 +12,16 @@ AREA_TYPE_LABELS = {
 
 @dataclass(slots=True, frozen=True)
 class BoundaryLine:
+    """Polyline of a state boundary drawn over frames."""
+
     bounds: tuple[float, float, float, float]
     line: tuple[tuple[float, float], ...]
 
 
 @dataclass(slots=True, frozen=True)
 class AreaCatalogEntry:
+    """Municipality from the bundled catalog."""
+
     area_id: str
     area_type: str
     area_code: str
@@ -29,22 +35,26 @@ class AreaCatalogEntry:
 
     @property
     def type_label(self) -> str:
+        """Human label for the area type."""
         return AREA_TYPE_LABELS.get(self.area_type, self.area_type)
 
     @property
     def context_label(self) -> str | None:
+        """State shown next to the name, if any."""
         if self.area_type == "municipio":
             return self.state_code
         return None
 
     @property
     def display_name(self) -> str:
+        """Name with state, as shown in the UI."""
         if self.context_label:
             return f"{self.name} - {self.context_label}"
         return self.name
 
     @property
     def subtitle(self) -> str:
+        """Secondary line shown in search results."""
         parts = [self.type_label]
         if self.population:
             parts.append(f"Pop. {self.population}")
@@ -56,6 +66,7 @@ class AreaCatalogEntry:
 
     @property
     def code_label(self) -> str:
+        """IBGE code label."""
         if self.area_type == "municipio":
             return f"IBGE {self.area_code}"
         return f"Código {self.area_code}"
@@ -63,6 +74,8 @@ class AreaCatalogEntry:
 
 @dataclass(slots=True, frozen=True)
 class AreaGeometry:
+    """Municipality outline with bounds and centroid."""
+
     area_id: str
     centroid: tuple[float, float]
     bounds: tuple[float, float, float, float]
@@ -71,6 +84,8 @@ class AreaGeometry:
 
 @dataclass(slots=True, frozen=True)
 class TrackedArea:
+    """Municipality being tracked, with status and optional marker."""
+
     area_id: str
     area_type: str
     area_code: str
@@ -90,22 +105,26 @@ class TrackedArea:
 
     @property
     def type_label(self) -> str:
+        """Human label for the area type."""
         return AREA_TYPE_LABELS.get(self.area_type, self.area_type)
 
     @property
     def context_label(self) -> str | None:
+        """State shown next to the name, if any."""
         if self.area_type == "municipio":
             return self.state_code
         return None
 
     @property
     def display_name(self) -> str:
+        """Name with state, as shown in the UI."""
         if self.context_label:
             return f"{self.name} - {self.context_label}"
         return self.name
 
     @property
     def code_label(self) -> str:
+        """IBGE code label."""
         if self.area_type == "municipio":
             return f"IBGE {self.area_code}"
         return f"Código {self.area_code}"
@@ -113,6 +132,8 @@ class TrackedArea:
 
 @dataclass(slots=True, frozen=True)
 class RenderedArea:
+    """Result of rendering one municipality."""
+
     area: AreaCatalogEntry
     png_paths: list[Path]
     media_path: Path

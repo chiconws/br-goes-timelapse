@@ -1,3 +1,5 @@
+"""Municipality outlines from the IBGE mesh API, cached on disk."""
+
 from __future__ import annotations
 
 import gzip
@@ -15,13 +17,17 @@ MALHAS_SEGMENTS = {
 
 
 class IbgeGeometryStore:
+    """Fetch and cache municipality outlines from IBGE."""
+
     def __init__(self, cache_dir: Path, *, base_url: str, timeout_seconds: int = 30):
+        """Store the cache directory, API base URL and timeout."""
         self._cache_dir = cache_dir
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
 
     def load_geometry(self, area: AreaCatalogEntry) -> AreaGeometry:
+        """Return the cached outline, fetching it on a miss."""
         cache_path = self.cache_path(area.area_id)
         if cache_path.exists():
             return self._read_geometry(cache_path)
@@ -31,6 +37,7 @@ class IbgeGeometryStore:
         return geometry
 
     def fetch_geometry(self, area: AreaCatalogEntry) -> AreaGeometry:
+        """Download the outline from IBGE and cache it."""
         segment = MALHAS_SEGMENTS[area.area_type]
         encoded_code = quote(area.area_code, safe="")
         url = (
@@ -41,6 +48,7 @@ class IbgeGeometryStore:
         return _geometry_from_geojson(area.area_id, payload)
 
     def cache_path(self, area_id: str) -> Path:
+        """Return the cache file for an area."""
         return self._cache_dir / f"{area_id}.json.gz"
 
     @staticmethod
