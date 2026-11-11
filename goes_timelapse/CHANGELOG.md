@@ -1,6 +1,6 @@
 # Histórico de mudanças
 
-## Não lançado
+## 1.2.0
 
 - Passa a ler por HTTP Range só as linhas de `C02` e `C13` que cobrem cada município e só as coordenadas dos raios do `GLM`, reduzindo o tráfego de cerca de `33 GB/dia` para cerca de `0.9 GB/dia` por município.
 - Guarda as imagens em uma pasta por município: adicionar um não altera os arquivos dos outros, e remover apaga só as pastas dele.
