@@ -10,7 +10,6 @@ from goes_timelapse.timeline.solar import (
     sunset_transition_alpha,
 )
 
-
 SOURCE_VISIBLE = "visible"
 SOURCE_INFRARED = "infrared"
 SOURCE_LIGHTNING = "lightning"

@@ -3,12 +3,11 @@ from __future__ import annotations
 import gzip
 import json
 import math
-import urllib.request
 from pathlib import Path
 from urllib.parse import quote
+import urllib.request
 
 from goes_timelapse.core.models import AreaCatalogEntry, AreaGeometry
-
 
 MALHAS_SEGMENTS = {
     "municipio": "municipios",
@@ -61,7 +60,10 @@ class IbgeGeometryStore:
             json.dump(
                 {
                     "area_id": geometry.area_id,
-                    "centroid": [round(geometry.centroid[0], 6), round(geometry.centroid[1], 6)],
+                    "centroid": [
+                        round(geometry.centroid[0], 6),
+                        round(geometry.centroid[1], 6),
+                    ],
                     "bounds": [round(value, 6) for value in geometry.bounds],
                     "polygon": [
                         [round(lon, 6), round(lat, 6)] for lon, lat in geometry.polygon
@@ -110,7 +112,9 @@ def _geometry_from_geojson(area_id: str, payload: object) -> AreaGeometry:
         area_id=area_id,
         centroid=(round(float(centroid[0]), 6), round(float(centroid[1]), 6)),
         bounds=_rounded_bounds(bounds),
-        polygon=tuple((round(float(lon), 6), round(float(lat), 6)) for lon, lat in polygon),
+        polygon=tuple(
+            (round(float(lon), 6), round(float(lat), 6)) for lon, lat in polygon
+        ),
     )
 
 
@@ -126,7 +130,9 @@ def _coerce_bounds(raw_bounds: object) -> tuple[float, float, float, float]:
     )
 
 
-def _rounded_bounds(bounds: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+def _rounded_bounds(
+    bounds: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
     return (
         round(float(bounds[0]), 6),
         round(float(bounds[1]), 6),
@@ -141,7 +147,9 @@ def _coerce_float(value: object) -> float:
     return float(value)
 
 
-def _extract_exterior_rings(geometry: dict[str, object]) -> list[list[tuple[float, float]]]:
+def _extract_exterior_rings(
+    geometry: dict[str, object],
+) -> list[list[tuple[float, float]]]:
     geometry_type = geometry.get("type")
     coordinates = geometry.get("coordinates")
     if geometry_type == "Polygon":

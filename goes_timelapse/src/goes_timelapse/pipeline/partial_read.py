@@ -1,18 +1,18 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 import http.client
 import io
 import logging
 import math
 import os
+from pathlib import Path
 import struct
 import threading
 import time
-import zlib
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
-from pathlib import Path
 from urllib.parse import urlsplit
+import zlib
 
 import h5py
 import numpy as np
@@ -21,7 +21,6 @@ from rasterio import Affine
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
 from rasterio.warp import reproject, transform_bounds
-
 
 LOGGER = logging.getLogger(__name__)
 WGS84_CRS = CRS.from_epsg(4326)
@@ -99,17 +98,23 @@ class RangeFile(io.RawIOBase):
                 if self._parts.scheme == "https"
                 else http.client.HTTPConnection
             )
-            connection = connection_type(self._parts.netloc, timeout=RANGE_TIMEOUT_SECONDS)
+            connection = connection_type(
+                self._parts.netloc, timeout=RANGE_TIMEOUT_SECONDS
+            )
             self._local.connection = connection
             with self._lock:
                 self._connections.add(connection)
         return connection
 
-    def _request(self, method: str, headers: dict[str, str], expected: int) -> tuple[bytes, str]:
+    def _request(
+        self, method: str, headers: dict[str, str], expected: int
+    ) -> tuple[bytes, str]:
         for attempt in range(1, RANGE_RETRY_ATTEMPTS + 1):
             try:
                 connection = self._connect()
-                connection.request(method, self._parts.path, headers={**self._headers, **headers})
+                connection.request(
+                    method, self._parts.path, headers={**self._headers, **headers}
+                )
                 response = connection.getresponse()
                 body = response.read()
                 with self._lock:
@@ -126,7 +131,9 @@ class RangeFile(io.RawIOBase):
                 raise failure
             with self._lock:
                 self.retries += 1
-            LOGGER.warning("Retrying %s %s: %r", method, headers.get("Range", ""), failure)
+            LOGGER.warning(
+                "Retrying %s %s: %r", method, headers.get("Range", ""), failure
+            )
             time.sleep(attempt)
         raise AssertionError("unreachable")
 
@@ -155,7 +162,9 @@ class RangeFile(io.RawIOBase):
         return self._position
 
     def seek(self, offset: int, whence: int = 0) -> int:
-        self._position = {0: offset, 1: self._position + offset, 2: self.size + offset}[whence]
+        self._position = {0: offset, 1: self._position + offset, 2: self.size + offset}[
+            whence
+        ]
         return self._position
 
     def _fetch_block(self, index: int) -> None:
@@ -173,7 +182,9 @@ class RangeFile(io.RawIOBase):
             # Like an OS read-ahead: index lookups jump around and stay single, chunk data runs
             # in file order and ramps up, so only sequential reads pay for the blocks they overrun.
             sequential = index == self._last_read_block + 1
-            self._read_ahead = min(self._read_ahead * 2, READ_AHEAD_BLOCKS) if sequential else 1
+            self._read_ahead = (
+                min(self._read_ahead * 2, READ_AHEAD_BLOCKS) if sequential else 1
+            )
             last_block = (self.size - 1) // self._block_size
             stop = min(index + self._read_ahead, last_block + 1)
             self._last_read_block = stop - 1
@@ -213,17 +224,25 @@ def write_abi_crop(
     gray = np.zeros((row_max - row_min, col_max - col_min), dtype=np.uint8)
     alpha = np.zeros_like(gray)
     transform = Affine(
-        GRID_RESOLUTION, 0, col_min * GRID_RESOLUTION,
-        0, -GRID_RESOLUTION, -row_min * GRID_RESOLUTION,
+        GRID_RESOLUTION,
+        0,
+        col_min * GRID_RESOLUTION,
+        0,
+        -GRID_RESOLUTION,
+        -row_min * GRID_RESOLUTION,
     )
 
     remote = RangeFile(url, block_size=BLOCK_SIZE_BY_BAND[band], user_agent=user_agent)
     try:
         with h5py.File(remote, "r") as dataset:
             source_crs = _geostationary_crs(dataset)
-            height = float(dataset["goes_imager_projection"].attrs["perspective_point_height"][0])
+            height = float(
+                dataset["goes_imager_projection"].attrs["perspective_point_height"][0]
+            )
             axes = _axis_scales(dataset, height)
-            _paint_bbox(dataset, band, bbox, source_crs, axes, gray, alpha, transform, stats)
+            _paint_bbox(
+                dataset, band, bbox, source_crs, axes, gray, alpha, transform, stats
+            )
     finally:
         remote.close()
     stats.bytes_read = remote.bytes_read
@@ -253,7 +272,9 @@ def _geostationary_crs(dataset: h5py.File) -> CRS:
     )
 
 
-def _axis_scales(dataset: h5py.File, height: float) -> tuple[float, float, float, float]:
+def _axis_scales(
+    dataset: h5py.File, height: float
+) -> tuple[float, float, float, float]:
     x_attrs, y_attrs = dataset["x"].attrs, dataset["y"].attrs
     return (
         float(x_attrs["scale_factor"][0]) * height,
@@ -277,14 +298,20 @@ def _paint_bbox(
     x_scale, x_offset, y_scale, y_offset = axes
     pad = READ_MARGIN_PIXELS * GRID_RESOLUTION
     padded = (bbox[0] - pad, bbox[1] - pad, bbox[2] + pad, bbox[3] + pad)
-    x_min, y_min, x_max, y_max = transform_bounds(WGS84_CRS, source_crs, *padded, densify_pts=21)
+    x_min, y_min, x_max, y_max = transform_bounds(
+        WGS84_CRS, source_crs, *padded, densify_pts=21
+    )
     radiance = dataset["Rad"]
     rows, columns = radiance.shape
     # Index math stays in float until floor/ceil; the y axis runs downward.
     row_start = max(math.floor((y_max - y_offset) / y_scale) - READ_MARGIN_PIXELS, 0)
-    row_stop = min(math.ceil((y_min - y_offset) / y_scale) + 1 + READ_MARGIN_PIXELS, rows)
+    row_stop = min(
+        math.ceil((y_min - y_offset) / y_scale) + 1 + READ_MARGIN_PIXELS, rows
+    )
     col_start = max(math.floor((x_min - x_offset) / x_scale) - READ_MARGIN_PIXELS, 0)
-    col_stop = min(math.ceil((x_max - x_offset) / x_scale) + 1 + READ_MARGIN_PIXELS, columns)
+    col_stop = min(
+        math.ceil((x_max - x_offset) / x_scale) + 1 + READ_MARGIN_PIXELS, columns
+    )
     if row_start >= row_stop or col_start >= col_stop:
         raise ValueError(f"Área fora do disco do satélite: {bbox}")
 
@@ -293,16 +320,26 @@ def _paint_bbox(
     source_gray, source_alpha = _counts_to_gray_alpha(dataset, band, counts)
     reproject_started_at = time.perf_counter()
     source_transform = Affine(
-        x_scale, 0, x_offset + (col_start - 0.5) * x_scale,
-        0, y_scale, y_offset + (row_start - 0.5) * y_scale,
+        x_scale,
+        0,
+        x_offset + (col_start - 0.5) * x_scale,
+        0,
+        y_scale,
+        y_offset + (row_start - 0.5) * y_scale,
     )
 
     inverse = ~transform
     col_left, row_top = inverse * (bbox[0], bbox[3])
     col_right, row_bottom = inverse * (bbox[2], bbox[1])
     window = (
-        slice(max(math.floor(row_top) - READ_MARGIN_PIXELS, 0), math.ceil(row_bottom) + READ_MARGIN_PIXELS),
-        slice(max(math.floor(col_left) - READ_MARGIN_PIXELS, 0), math.ceil(col_right) + READ_MARGIN_PIXELS),
+        slice(
+            max(math.floor(row_top) - READ_MARGIN_PIXELS, 0),
+            math.ceil(row_bottom) + READ_MARGIN_PIXELS,
+        ),
+        slice(
+            max(math.floor(col_left) - READ_MARGIN_PIXELS, 0),
+            math.ceil(col_right) + READ_MARGIN_PIXELS,
+        ),
     )
     target_gray = np.zeros_like(gray[window])
     target_alpha = np.zeros_like(alpha[window])
@@ -340,9 +377,15 @@ def _counts_to_gray_alpha(
         normalized = _enhance_brightness_temperature(
             _brightness_temperature(
                 radiance,
-                *(float(dataset[name][()]) for name in (
-                    "planck_fk1", "planck_fk2", "planck_bc1", "planck_bc2",
-                )),
+                *(
+                    float(dataset[name][()])
+                    for name in (
+                        "planck_fk1",
+                        "planck_fk2",
+                        "planck_bc1",
+                        "planck_bc2",
+                    )
+                ),
             )
         )
     else:
@@ -455,8 +498,14 @@ def decode_glm_chunks(
 ) -> np.ndarray:
     values: list[np.ndarray] = []
     for address, size in chunks:
-        start, end = next(item for item in ranges if item[0] <= address and address + size <= item[1])
-        values.append(_decode_glm_chunk(ranges[(start, end)][address - start : address - start + size]))
+        start, end = next(
+            item for item in ranges if item[0] <= address and address + size <= item[1]
+        )
+        values.append(
+            _decode_glm_chunk(
+                ranges[(start, end)][address - start : address - start + size]
+            )
+        )
     return np.concatenate(values)
 
 
@@ -481,6 +530,8 @@ def read_glm_flashes_with_hdf5(url: str, *, user_agent: str) -> list[dict[str, f
 def valid_flash_points(latitudes, longitudes) -> list[dict[str, float]]:
     return [
         {"lat": latitude, "lon": longitude}
-        for latitude, longitude in zip(map(float, latitudes), map(float, longitudes), strict=False)
+        for latitude, longitude in zip(
+            map(float, latitudes), map(float, longitudes), strict=False
+        )
         if -90.0 <= latitude <= 90.0 and -180.0 <= longitude <= 180.0
     ]

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Callable
 
 from goes_timelapse.core.config import Settings
 from goes_timelapse.core.logging_utils import get_logger
@@ -16,12 +16,11 @@ from goes_timelapse.pipeline.runtime_types import (
     SLOT_MINUTES,
 )
 from goes_timelapse.timeline import (
-    AreaTimelinePlan,
     DEFAULT_TRANSITION_BLEND_WEIGHTS,
+    AreaTimelinePlan,
     build_area_timeline_plan,
     floor_to_slot,
 )
-
 
 TRANSITION_BLEND_WEIGHTS = DEFAULT_TRANSITION_BLEND_WEIGHTS
 LOGGER = get_logger(__name__)
@@ -66,7 +65,9 @@ def build_area_timeline_plan_for_area(
 def build_global_target_timestamps(
     *,
     tracked_areas: list[AreaCatalogEntry],
-    build_area_timeline: Callable[[AreaCatalogEntry, datetime | None], AreaTimelinePlan],
+    build_area_timeline: Callable[
+        [AreaCatalogEntry, datetime | None], AreaTimelinePlan
+    ],
     reference_moment: datetime | None = None,
 ) -> dict[str, tuple[str, ...]]:
     targets: dict[str, set[str]] = {

@@ -1,22 +1,21 @@
 from __future__ import annotations
 
-import json
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
+import json
 from pathlib import Path
-from typing import Callable, Mapping
 
 from goes_timelapse.core.config import Settings
 from goes_timelapse.core.logging_utils import TraceLogger, get_logger
 from goes_timelapse.pipeline.downloader import GlmDownloader, GoesDownloader
 from goes_timelapse.pipeline.rendering import parse_goes_timestamp
 from goes_timelapse.pipeline.runtime_types import (
-    RawFileEntry,
     RAW_SOURCE_INFRARED,
     RAW_SOURCE_LABELS,
     RAW_SOURCE_LIGHTNING,
     RAW_SOURCE_VISIBLE,
+    RawFileEntry,
 )
-
 
 LOGGER = get_logger(__name__)
 
@@ -36,14 +35,18 @@ def raw_files_for_source(settings: Settings, source_key: str) -> list[RawFileEnt
             {
                 "filename": filename,
                 "size_bytes": stat.st_size,
-                "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
+                "modified_at": datetime.fromtimestamp(
+                    stat.st_mtime, tz=UTC
+                ).isoformat(),
                 "label": f"{filename} ({RAW_SOURCE_LABELS[source_key]})",
             }
         )
     return entries
 
 
-def all_raw_files(settings: Settings, source_keys: tuple[str, ...]) -> list[RawFileEntry]:
+def all_raw_files(
+    settings: Settings, source_keys: tuple[str, ...]
+) -> list[RawFileEntry]:
     files: list[RawFileEntry] = []
     for source_key in source_keys:
         files.extend(raw_files_for_source(settings, source_key))
@@ -55,7 +58,13 @@ def all_raw_files(settings: Settings, source_keys: tuple[str, ...]) -> list[RawF
 
 
 def raw_timestamp_count(items: list[RawFileEntry]) -> int:
-    return len({timestamp for item in items if (timestamp := parse_goes_timestamp(item["filename"]))})
+    return len(
+        {
+            timestamp
+            for item in items
+            if (timestamp := parse_goes_timestamp(item["filename"]))
+        }
+    )
 
 
 def raw_disk_usage_bytes(settings: Settings, source_keys: tuple[str, ...]) -> int:
@@ -197,7 +206,11 @@ def prune_raw_cache(
 
 def latest_kept_timestamp(paths: list[Path]) -> str | None:
     timestamps = [parse_goes_timestamp(path.name) for path in paths]
-    usable = [timestamp for timestamp in timestamps if goes_timestamp_to_datetime(timestamp) is not None]
+    usable = [
+        timestamp
+        for timestamp in timestamps
+        if goes_timestamp_to_datetime(timestamp) is not None
+    ]
     if not usable:
         return None
     return max(usable)

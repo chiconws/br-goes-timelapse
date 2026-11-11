@@ -1,10 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 import logging
 import sys
-from collections.abc import Mapping
 from typing import Any, Final, cast
-
 
 TRACE_LEVEL: Final[int] = 5
 TRACE_LEVEL_NAME: Final[str] = "TRACE"
@@ -33,7 +32,9 @@ class SeverityColorFormatter(logging.Formatter):
         timestamp = self.formatTime(record, self.datefmt)
         color = LEVEL_COLORS.get(record.levelno, "")
         prefix = f"{timestamp} {record.levelname:<8} [{record.name}]"
-        rendered = f"{color}{prefix}{RESET} {message}" if color else f"{prefix} {message}"
+        rendered = (
+            f"{color}{prefix}{RESET} {message}" if color else f"{prefix} {message}"
+        )
 
         if record.exc_info:
             rendered += "\n" + self.formatException(record.exc_info)
@@ -43,11 +44,12 @@ class SeverityColorFormatter(logging.Formatter):
 
 
 class TraceLogger(logging.Logger):
-    def trace(self, message: str, *args: object, **kwargs: object) -> None:
-        ...
+    def trace(self, message: str, *args: object, **kwargs: object) -> None: ...
 
 
-def _logger_trace(self: logging.Logger, message: str, *args: object, **kwargs: object) -> None:
+def _logger_trace(
+    self: logging.Logger, message: str, *args: object, **kwargs: object
+) -> None:
     if self.isEnabledFor(TRACE_LEVEL):
         self._log(
             TRACE_LEVEL,
@@ -108,7 +110,7 @@ def configure_logging(level: int) -> None:
 
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(SeverityColorFormatter(datefmt="%Y-%m-%d %H:%M:%S"))
-    setattr(handler, "_goes_timelapse_handler", True)
+    handler._goes_timelapse_handler = True
 
     root_logger = logging.getLogger()
     root_logger.setLevel(level)

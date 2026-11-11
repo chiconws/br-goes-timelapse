@@ -5,17 +5,15 @@ from pathlib import Path
 from typing import Protocol
 
 import numpy as np
-import rasterio
 from PIL import Image
+import rasterio
 from rasterio import Affine
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
 from rasterio.transform import from_bounds
-from rasterio.warp import reproject
 from rasterio.vrt import WarpedVRT
-from rasterio.windows import transform as window_transform
-from rasterio.windows import Window
-
+from rasterio.warp import reproject
+from rasterio.windows import Window, transform as window_transform
 
 WGS84_CRS = CRS.from_epsg(4326)
 NETCDF_WGS84_OVERSAMPLE = 2
@@ -23,20 +21,16 @@ NETCDF_WGS84_OVERSAMPLE = 2
 
 class RasterSource(Protocol):
     @property
-    def width(self) -> int:
-        ...
+    def width(self) -> int: ...
 
     @property
-    def height(self) -> int:
-        ...
+    def height(self) -> int: ...
 
     @property
-    def transform(self) -> Affine:
-        ...
+    def transform(self) -> Affine: ...
 
     @property
-    def crs(self) -> CRS:
-        ...
+    def crs(self) -> CRS: ...
 
     def read_image(
         self,
@@ -44,11 +38,9 @@ class RasterSource(Protocol):
         *,
         output_size: tuple[int, int] | None = None,
         dst_bounds: tuple[float, float, float, float] | None = None,
-    ) -> Image.Image:
-        ...
+    ) -> Image.Image: ...
 
-    def close(self) -> None:
-        ...
+    def close(self) -> None: ...
 
 
 @dataclass(slots=True)
@@ -59,7 +51,9 @@ class GeoTiffRasterSource:
     def __post_init__(self) -> None:
         dataset_crs = self._dataset.crs
         if dataset_crs and dataset_crs != WGS84_CRS:
-            self._vrt = WarpedVRT(self._dataset, crs=WGS84_CRS, resampling=Resampling.bilinear)
+            self._vrt = WarpedVRT(
+                self._dataset, crs=WGS84_CRS, resampling=Resampling.bilinear
+            )
 
     @property
     def dataset(self):
@@ -103,7 +97,11 @@ class GeoTiffRasterSource:
             rgba = np.dstack((red, green, blue, alpha)).astype(np.uint8)
             return Image.fromarray(rgba, mode="RGBA")
 
-        if dataset.count >= 2 and dataset.dtypes[0] == "uint8" and dataset.dtypes[1] == "uint8":
+        if (
+            dataset.count >= 2
+            and dataset.dtypes[0] == "uint8"
+            and dataset.dtypes[1] == "uint8"
+        ):
             grayscale = dataset.read(1, window=window, boundless=True)
             alpha = dataset.read(2, window=window, boundless=True)
             rgba = np.dstack((grayscale, grayscale, grayscale, alpha)).astype(np.uint8)
@@ -183,7 +181,11 @@ class GeoTiffRasterSource:
             rgba = np.dstack((red, green, blue, alpha)).astype(np.uint8)
             return Image.fromarray(rgba, mode="RGBA")
 
-        if dataset.count >= 2 and dataset.dtypes[0] == "uint8" and dataset.dtypes[1] == "uint8":
+        if (
+            dataset.count >= 2
+            and dataset.dtypes[0] == "uint8"
+            and dataset.dtypes[1] == "uint8"
+        ):
             grayscale = self._reproject_band(
                 dataset.read(1, window=window, boundless=True),
                 src_transform=src_transform,
@@ -292,8 +294,12 @@ class GoesNetcdfRasterSource:
         if output_size and dst_bounds:
             subset, dqf = self._read_reprojected_crop(window, output_size, dst_bounds)
         else:
-            subset = self._cmi_dataset.read(1, window=window, boundless=True).astype(np.float32)
-            dqf = self._dqf_dataset.read(1, window=window, boundless=True).astype(np.uint8)
+            subset = self._cmi_dataset.read(1, window=window, boundless=True).astype(
+                np.float32
+            )
+            dqf = self._dqf_dataset.read(1, window=window, boundless=True).astype(
+                np.uint8
+            )
         subset = np.where(dqf == 0, subset, np.nan)
         grayscale = _normalize_visible_cmi_to_uint8(subset)
         return Image.fromarray(grayscale, mode="L").convert("RGBA")
@@ -309,8 +315,12 @@ class GoesNetcdfRasterSource:
         dst_bounds: tuple[float, float, float, float],
     ) -> tuple[np.ndarray, np.ndarray]:
         src_transform = window_transform(window, self._cmi_dataset.transform)
-        src_cmi = self._cmi_dataset.read(1, window=window, boundless=True).astype(np.float32)
-        src_dqf = self._dqf_dataset.read(1, window=window, boundless=True).astype(np.uint8)
+        src_cmi = self._cmi_dataset.read(1, window=window, boundless=True).astype(
+            np.float32
+        )
+        src_dqf = self._dqf_dataset.read(1, window=window, boundless=True).astype(
+            np.uint8
+        )
 
         output_width, output_height = output_size
         dense_width = output_width * NETCDF_WGS84_OVERSAMPLE
@@ -349,10 +359,18 @@ class GoesNetcdfRasterSource:
             resampling=Resampling.nearest,
         )
 
-        dense_image = Image.fromarray(np.nan_to_num(dense_cmi, nan=0.0).astype(np.float32), mode="F")
-        dense_valid = Image.fromarray(np.where(dense_dqf == 0, 255, 0).astype(np.uint8), mode="L")
-        image = dense_image.resize((output_width, output_height), Image.Resampling.BICUBIC)
-        mask = dense_valid.resize((output_width, output_height), Image.Resampling.NEAREST)
+        dense_image = Image.fromarray(
+            np.nan_to_num(dense_cmi, nan=0.0).astype(np.float32), mode="F"
+        )
+        dense_valid = Image.fromarray(
+            np.where(dense_dqf == 0, 255, 0).astype(np.uint8), mode="L"
+        )
+        image = dense_image.resize(
+            (output_width, output_height), Image.Resampling.BICUBIC
+        )
+        mask = dense_valid.resize(
+            (output_width, output_height), Image.Resampling.NEAREST
+        )
         subset = np.asarray(image, dtype=np.float32)
         dqf = np.where(np.asarray(mask, dtype=np.uint8) > 0, 0, 255).astype(np.uint8)
         subset = np.where(dqf == 0, subset, np.nan)
@@ -380,7 +398,9 @@ def _normalize_to_uint8(subset: np.ndarray) -> np.ndarray:
         high = low + 1.0
 
     normalized = np.zeros(subset.shape, dtype=np.float32)
-    normalized[finite_mask] = np.clip((subset[finite_mask] - low) / (high - low), 0.0, 1.0)
+    normalized[finite_mask] = np.clip(
+        (subset[finite_mask] - low) / (high - low), 0.0, 1.0
+    )
     return np.round(normalized * 255).astype(np.uint8)
 
 
@@ -400,7 +420,9 @@ def _normalize_visible_cmi_to_uint8(subset: np.ndarray) -> np.ndarray:
         high = low + 1.0
 
     normalized = np.zeros(subset.shape, dtype=np.float32)
-    normalized[finite_mask] = np.clip((subset[finite_mask] - low) / (high - low), 0.0, 1.0)
+    normalized[finite_mask] = np.clip(
+        (subset[finite_mask] - low) / (high - low), 0.0, 1.0
+    )
 
     # Keep more mid-tones and avoid the harsh black/white look from aggressive stretching.
     normalized = np.power(normalized, 0.92, dtype=np.float32)
@@ -424,7 +446,9 @@ def _normalize_infrared_cmi_to_uint8(subset: np.ndarray) -> np.ndarray:
         high = low + 1.0
 
     normalized = np.zeros(subset.shape, dtype=np.float32)
-    normalized[finite_mask] = np.clip((subset[finite_mask] - low) / (high - low), 0.0, 1.0)
+    normalized[finite_mask] = np.clip(
+        (subset[finite_mask] - low) / (high - low), 0.0, 1.0
+    )
     normalized = 1.0 - normalized
     normalized = np.power(normalized, 0.85, dtype=np.float32)
     normalized = 0.04 + (normalized * 0.92)
