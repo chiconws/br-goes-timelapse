@@ -100,7 +100,7 @@ def blocking_storage_message(storage_checks: dict[str, StorageCheck]) -> str | N
     blocking_warnings = [
         check.warning
         for check in storage_checks.values()
-        if check.is_blocking and check.warning
+        if check.key == "cache" and check.is_blocking and check.warning
     ]
     if not blocking_warnings:
         return None

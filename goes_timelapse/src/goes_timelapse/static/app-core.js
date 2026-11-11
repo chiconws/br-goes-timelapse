@@ -28,6 +28,7 @@
     markerDrafts: {},
     markerErrors: {},
     pendingPins: {},
+    selectedAreaId: null,
     searchRequestId: 0,
     searchTimer: null,
     refreshTimer: null,
@@ -316,7 +317,7 @@
     var rawCount = Number(status.raw_frame_count || 0);
     var summary = String(status.raw_download_summary || "");
     if (rawCount <= 0) {
-      return summary || "Aguardando quadros brutos do GOES vindos da NOAA.";
+      return summary || "Aguardando os primeiros quadros da NOAA.";
     }
     return "Na fila para a próxima renderização.";
   }

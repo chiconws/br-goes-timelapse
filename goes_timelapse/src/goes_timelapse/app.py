@@ -14,7 +14,7 @@ from goes_timelapse.core.state import StateStore
 from goes_timelapse.data.catalog import AreaCatalog
 from goes_timelapse.pipeline.service import DownloadsSnapshot, GoesTimelapseService
 
-STATIC_ASSET_VERSION = "20260329-1"
+STATIC_ASSET_VERSION = "20261101-1"
 STATIC_APP_JS_ROUTE = f"/static/app-{STATIC_ASSET_VERSION}.js"
 STATIC_STYLES_ROUTE = f"/static/styles-{STATIC_ASSET_VERSION}.css"
 

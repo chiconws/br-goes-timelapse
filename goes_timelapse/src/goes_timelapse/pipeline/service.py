@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 import sqlite3
 from datetime import UTC, datetime
+from time import perf_counter
 from pathlib import Path
 from typing_extensions import TypedDict
 
@@ -17,12 +19,17 @@ from goes_timelapse.pipeline.download_status import (
     build_source_download_summary,
     download_phase_label,
 )
-from goes_timelapse.pipeline.downloader import DownloadReport, GlmDownloader, GoesDownloader
-from goes_timelapse.pipeline.marker_geometry import point_within_polygon
+from goes_timelapse.pipeline.downloader import (
+    AreaCrop,
+    DownloadReport,
+    GlmDownloader,
+    GoesDownloader,
+)
 from goes_timelapse.pipeline.raw_cache import (
     all_raw_files,
     available_lightning_points_by_timestamp,
     available_raw_paths_by_source,
+    goes_timestamp_to_datetime,
     prune_raw_cache,
     raw_disk_usage_bytes,
     raw_files_for_source,
@@ -109,29 +116,24 @@ class GoesTimelapseService:
         self._downloaders = {
             RAW_SOURCE_VISIBLE: GoesDownloader(
                 base_url=settings.goes_url,
-                source_dir=settings.source_dir / RAW_SOURCE_VISIBLE,
                 raw_dir=settings.raw_dir / RAW_SOURCE_VISIBLE,
                 raw_history=settings.raw_history,
                 band="C02",
-                scratch_dir=settings.scratch_dir / RAW_SOURCE_VISIBLE,
                 progress_callback=lambda payload: self._update_raw_download_status(
                     RAW_SOURCE_VISIBLE, payload
                 ),
             ),
             RAW_SOURCE_INFRARED: GoesDownloader(
                 base_url=settings.goes_url,
-                source_dir=settings.source_dir / RAW_SOURCE_INFRARED,
                 raw_dir=settings.raw_dir / RAW_SOURCE_INFRARED,
                 raw_history=settings.raw_history,
                 band="C13",
-                scratch_dir=settings.scratch_dir / RAW_SOURCE_INFRARED,
                 progress_callback=lambda payload: self._update_raw_download_status(
                     RAW_SOURCE_INFRARED, payload
                 ),
             ),
             RAW_SOURCE_LIGHTNING: GlmDownloader(
                 base_url=settings.goes_url,
-                source_dir=settings.source_dir / RAW_SOURCE_LIGHTNING,
                 raw_dir=settings.raw_dir / RAW_SOURCE_LIGHTNING,
                 raw_history=settings.raw_history,
                 progress_callback=lambda payload: self._update_raw_download_status(
@@ -158,6 +160,8 @@ class GoesTimelapseService:
             for source_key in self._downloaders
         }
         self._centroid_cache: dict[str, tuple[float, float]] = {}
+        self._bytes_since_start = dict.fromkeys(self._downloaders, 0)
+        self._started_at = perf_counter()
 
     async def start(self) -> None:
         self.settings.ensure_directories()
@@ -217,7 +221,6 @@ class GoesTimelapseService:
         if area is None:
             raise KeyError(area_id)
         already_tracked = self.state_store.is_tracked(area_id)
-        tracked_before = self.state_store.count_tracked()
         if (
             not already_tracked
             and self.state_store.count_tracked() >= self.settings.max_tracked
@@ -227,7 +230,8 @@ class GoesTimelapseService:
             )
         self.state_store.upsert_tracked(area, status="queued")
         await self.enqueue(area_id)
-        if not already_tracked and tracked_before == 0:
+        # A new area starts with an empty folder, so its timeline is read right away.
+        if not already_tracked:
             if self._start_background_tasks:
                 self._schedule_immediate_refresh()
             else:
@@ -257,8 +261,9 @@ class GoesTimelapseService:
             raise ValueError("O marcador só é suportado para municípios acompanhados")
 
         geometry = await asyncio.to_thread(self.geometry_store.load_geometry, area)
-        if not point_within_polygon((marker_lon, marker_lat), geometry.polygon):
-            raise ValueError("As coordenadas precisam estar dentro do município selecionado")
+        min_lon, min_lat, max_lon, max_lat = self.renderer.destination_bounds(geometry)
+        if not (min_lon <= marker_lon <= max_lon and min_lat <= marker_lat <= max_lat):
+            raise ValueError("As coordenadas precisam estar dentro da área da imagem")
 
         self.state_store.set_marker(
             area_id,
@@ -425,19 +430,15 @@ class GoesTimelapseService:
                             plan.source_key,
                             plan.target_timestamps,
                         )
-                        report = await self._downloaders[plan.source_key].refresh_latest(
-                            target_timestamps=plan.target_timestamps,
-                        )
+                        report = await self._refresh_source(plan)
                         assert report is not None
                     except Exception as err:
                         LOGGER.exception("Raw refresh failed for %s", plan.source_key)
+                        error_messages.append(f"{RAW_SOURCE_LABELS[plan.source_key]}: {err}")
                         if self._raw_files_for_source(plan.source_key):
                             self._mark_source_partial_due_to_error(plan.source_key)
                         else:
                             self._mark_source_error(plan.source_key, str(err))
-                            error_messages.append(
-                                f"{RAW_SOURCE_LABELS[plan.source_key]}: {err}"
-                            )
                         continue
 
                     self._finalize_download_status(plan.source_key, report)
@@ -450,6 +451,23 @@ class GoesTimelapseService:
                         [path.name for path in report.kept_files],
                         report.latest_available,
                         report.last_downloaded,
+                    )
+                    self._bytes_since_start[plan.source_key] += report.bytes_read
+                    uptime_hours = max((perf_counter() - self._started_at) / 3600, 1e-9)
+                    LOGGER.info(
+                        "METRIC cycle source=%s files=%s failed=%s bytes=%s requests=%s retries=%s "
+                        "listing_s=%.2f elapsed_s=%.2f total_since_start_bytes=%s "
+                        "projected_gb_per_day=%.2f",
+                        plan.source_key,
+                        report.downloaded_count,
+                        report.failed_count,
+                        report.bytes_read,
+                        report.requests,
+                        report.retries,
+                        report.listing_seconds,
+                        report.elapsed_seconds,
+                        self._bytes_since_start[plan.source_key],
+                        self._bytes_since_start[plan.source_key] / 1e9 / uptime_hours * 24,
                     )
                     total_downloads += report.downloaded_count
                     if report.failed_count and not report.kept_files:
@@ -485,6 +503,29 @@ class GoesTimelapseService:
                     continue
                 self._set_area_status(tracked.area_id, "queued", last_error=None)
                 await self.enqueue(tracked.area_id)
+
+    async def _refresh_source(self, plan: DownloadSourcePlan) -> DownloadReport:
+        downloader = self._downloaders[plan.source_key]
+        if isinstance(downloader, GlmDownloader):
+            return await downloader.refresh_latest(target_timestamps=plan.target_timestamps)
+        return await downloader.refresh_latest(
+            target_timestamps=plan.target_timestamps,
+            areas=self._area_crops(plan.source_key),
+        )
+
+    def _area_crops(self, source_key: str) -> tuple[AreaCrop, ...]:
+        return tuple(
+            AreaCrop(
+                area_id=area.area_id,
+                bounds=self.renderer.destination_bounds(self.geometry_store.load_geometry(area)),
+                target_timestamps=tuple(
+                    frame.slot_timestamp
+                    for frame in self._build_area_timeline_plan(area).frames
+                    if source_key in frame.required_sources
+                ),
+            )
+            for area in self._tracked_catalog_areas()
+        )
 
     def _set_area_status(
         self,
@@ -590,6 +631,14 @@ class GoesTimelapseService:
                 area_id,
             )
             latest_source_timestamp = frame_specs[-1].timestamp
+            latest_moment = goes_timestamp_to_datetime(latest_source_timestamp)
+            LOGGER.info(
+                "METRIC area_ready area=%s frames=%s latest_slot=%s slot_age_s=%.0f",
+                area_id,
+                len(png_paths),
+                latest_source_timestamp,
+                (datetime.now(UTC) - latest_moment).total_seconds() if latest_moment else -1,
+            )
 
             if not self.state_store.is_tracked(area_id):
                 self._cleanup_area_files(area_id)
@@ -617,6 +666,8 @@ class GoesTimelapseService:
 
     def _cleanup_area_files(self, area_id: str) -> None:
         self.renderer.cleanup(area_id)
+        for source_key in (RAW_SOURCE_VISIBLE, RAW_SOURCE_INFRARED):
+            shutil.rmtree(self.settings.raw_dir / source_key / area_id, ignore_errors=True)
         self.media_path(area_id).unlink(missing_ok=True)
         (self.settings.media_dir / f"{area_id}.gif").unlink(missing_ok=True)
         (self.settings.snippets_dir / f"{area_id}.yaml").unlink(missing_ok=True)
@@ -871,7 +922,7 @@ class GoesTimelapseService:
         return build_frame_specs_from_timeline(
             area=area,
             build_area_timeline=lambda area_obj: self._build_area_timeline_plan(area_obj),
-            source_paths=self._available_raw_paths_by_source(),
+            source_paths=self._available_raw_paths_by_source(area.area_id),
             lightning_points_by_timestamp=self._available_lightning_points_by_timestamp(),
         )
 
@@ -924,8 +975,8 @@ class GoesTimelapseService:
     def _raw_files_for_source(self, source_key: str) -> list[RawFileEntry]:
         return raw_files_for_source(self.settings, source_key)
 
-    def _available_raw_paths_by_source(self) -> dict[str, dict[str, Path]]:
-        return available_raw_paths_by_source(self.settings, self._is_valid_raw)
+    def _available_raw_paths_by_source(self, area_id: str) -> dict[str, dict[str, Path]]:
+        return available_raw_paths_by_source(self.settings, area_id, self._is_valid_raw)
 
     def _available_lightning_points_by_timestamp(
         self,

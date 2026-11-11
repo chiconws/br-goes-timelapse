@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import json
@@ -14,12 +13,23 @@ from urllib.parse import quote
 import xml.etree.ElementTree as ET
 
 import aiohttp
-import netCDF4
-import rasterio
 from typing_extensions import TypedDict
 
 from goes_timelapse.core.logging_utils import get_logger
-from goes_timelapse.pipeline.geo2grid import BRAZIL_LONLAT_BBOX, Geo2GridConverter
+from goes_timelapse.pipeline.partial_read import (
+    GLM_LAT_NODE,
+    GLM_LON_NODE,
+    GLM_NODE_SIZE,
+    RETRYABLE_STATUS,
+    BBox,
+    CropStats,
+    decode_glm_chunks,
+    glm_read_ranges,
+    parse_glm_node,
+    read_glm_flashes_with_hdf5,
+    valid_flash_points,
+    write_abi_crop,
+)
 
 
 LOGGER = get_logger(__name__)
@@ -31,31 +41,28 @@ GLM_PRODUCT_PREFIX = "GLM-L2-LCFA"
 GLM_LISTING_PREFIX_TEMPLATE = "{product}/{year}/{julian_day}/{hour}/OR_{product}_G19_"
 DOWNLOAD_RETRY_ATTEMPTS = 5
 DOWNLOAD_CONCURRENCY = 2
-CONVERT_CONCURRENCY = 1
+GLM_CONCURRENCY = 8
+GLM_LAYOUT_CHECK_SECONDS = 3600
 LOOKBACK_HOURS = 4
 REQUEST_HEADERS = {
     "Accept-Encoding": "identity",
-    "Connection": "close",
-    "User-Agent": "br-goes-timelapse/1.1.2",
+    "User-Agent": "br-goes-timelapse/1.2.0",
 }
 LISTING_TIMEOUT = aiohttp.ClientTimeout(total=45, connect=15, sock_connect=15, sock_read=20)
 DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=None, connect=30, sock_connect=30, sock_read=900)
+
+
+class TransientHttpError(aiohttp.ClientError):
+    """S3 asked to retry, as in 503 Slow Down."""
+
+
 DOWNLOAD_RETRYABLE_ERRORS = (
     aiohttp.ClientConnectionError,
     aiohttp.ClientPayloadError,
     asyncio.TimeoutError,
+    TransientHttpError,
 )
 S3_XML_NAMESPACE = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
-
-
-ProgressHook = Callable[[str, int, int | None], Awaitable[None]]
-
-
-class DownloaderConverter(Protocol):
-    def output_filename(self, source_filename: str) -> str: ...
-    def source_filename(self, output_filename: str) -> str: ...
-    def convert(self, source_path: Path, output_path: Path) -> None: ...
-    def set_ll_bbox(self, ll_bbox: tuple[float, float, float, float]) -> None: ...
 
 
 class SessionLike(Protocol):
@@ -77,23 +84,31 @@ class DownloadReport:
     last_downloaded: str | None
     latest_available: str | None
     failed_files: list[str] = field(default_factory=list)
+    bytes_read: int = 0
+    requests: int = 0
+    retries: int = 0
+    listing_seconds: float = 0.0
+    elapsed_seconds: float = 0.0
+
+
+@dataclass(slots=True, frozen=True)
+class AreaCrop:
+    area_id: str
+    bounds: BBox
+    target_timestamps: tuple[str, ...]
 
 
 class GoesDownloader:
     def __init__(
         self,
         base_url: str,
-        source_dir: Path,
         raw_dir: Path,
         raw_history: int,
         *,
         band: str = "C02",
-        scratch_dir: Path | None = None,
-        converter: DownloaderConverter | None = None,
         progress_callback: Callable[[dict[str, object]], None] | None = None,
     ):
         self._base_url = base_url.rstrip("/") + "/"
-        self._source_dir = source_dir
         self._raw_dir = raw_dir
         self._raw_history = raw_history
         self._band = band
@@ -103,22 +118,14 @@ class GoesDownloader:
             rf"OR_{re.escape(NODD_PRODUCT_PREFIX)}-{re.escape(self._band_token)}_G19_"
             rf"s(?P<timestamp>\d{{13,14}})_e\d{{13,14}}_c\d{{13,14}}\.nc)"
         )
-        self._converter = converter or Geo2GridConverter(
-            product=band,
-            scratch_dir=scratch_dir,
-        )
         self._progress_callback = progress_callback
-        self._source_dir.mkdir(parents=True, exist_ok=True)
         self._raw_dir.mkdir(parents=True, exist_ok=True)
 
     def output_filename(self, source_filename: str) -> str:
-        return self._converter.output_filename(source_filename)
+        return f"{Path(source_filename).stem}.tif"
 
     def source_filename(self, output_filename: str) -> str:
-        return self._converter.source_filename(output_filename)
-
-    def set_ll_bbox(self, ll_bbox: tuple[float, float, float, float]) -> None:
-        self._converter.set_ll_bbox(ll_bbox)
+        return f"{Path(output_filename).stem}.nc"
 
     def parse_listing(self, xml_payload: str) -> list[str]:
         root = ET.fromstring(xml_payload)
@@ -140,19 +147,26 @@ class GoesDownloader:
         *,
         download_missing: bool = True,
         target_timestamps: tuple[str, ...] | None = None,
+        areas: tuple[AreaCrop, ...] = (),
     ) -> DownloadReport:
-        connector = aiohttp.TCPConnector(
-            limit=DOWNLOAD_CONCURRENCY,
-            force_close=True,
-            family=socket.AF_INET,
+        started_at = perf_counter()
+        connector = aiohttp.TCPConnector(limit=DOWNLOAD_CONCURRENCY, family=socket.AF_INET)
+        slots_on_disk = {area.area_id: self._slots_on_disk(area.area_id) for area in areas}
+        missing_slots = tuple(
+            {
+                slot
+                for area in areas
+                for slot in area.target_timestamps
+                if slot not in slots_on_disk[area.area_id]
+            }
         )
         async with aiohttp.ClientSession(
-            timeout=DOWNLOAD_TIMEOUT,
+            timeout=LISTING_TIMEOUT,
             connector=connector,
             headers=REQUEST_HEADERS,
         ) as session:
             try:
-                source_filenames = await self._fetch_listing(session)
+                source_filenames = await self._fetch_listing(session, missing_slots)
             except DOWNLOAD_RETRYABLE_ERRORS as err:
                 source_filenames = self._cached_source_filenames_from_disk()
                 if not source_filenames:
@@ -162,264 +176,161 @@ class GoesDownloader:
                     self._base_url,
                     err,
                 )
+        listing_seconds = perf_counter() - started_at
 
-            candidate_sources = self._candidate_source_filenames(
-                source_filenames,
-                target_timestamps=target_timestamps,
-            )
-            candidate_outputs = [
-                self.output_filename(filename) for filename in candidate_sources
-            ]
-            latest_available = self._latest_available_output(
-                source_filenames,
-                target_timestamps=target_timestamps,
-            )
-            LOGGER.trace(
-                "Imagery refresh plan for %s: targets=%s candidates=%s latest_available=%s",
-                self._band,
-                target_timestamps,
-                candidate_outputs,
-                latest_available,
-            )
-            self._emit_progress(
-                phase="downloading" if download_missing and candidate_outputs else "idle",
-                attempted_count=len(candidate_outputs),
-                completed_count=0,
-                failed_count=0,
-                active_count=0,
-                latest_available=latest_available,
-                current_file=None,
-                last_downloaded=None,
-            )
-            if not download_missing:
-                kept_files = self._kept_raws_on_disk()
-                return DownloadReport(
-                    kept_files=kept_files,
-                    downloaded_count=0,
-                    attempted_count=0,
-                    failed_count=0,
-                    last_downloaded=None,
-                    latest_available=latest_available,
-                    failed_files=[],
-                )
-
-            download_semaphore = asyncio.Semaphore(DOWNLOAD_CONCURRENCY)
-            completed_count = 0
-            failed_files: list[str] = []
-            last_downloaded: str | None = None
-            active_downloads: dict[str, dict[str, object]] = {}
-            progress_lock = asyncio.Lock()
-            ready_for_conversion: dict[int, tuple[str, str, Path | None]] = {}
-            ready_for_conversion_event = asyncio.Event()
-
-            def current_phase() -> str:
-                if any(
-                    str(item.get("stage")) == "downloading"
-                    for item in active_downloads.values()
-                ):
-                    return "downloading"
-                if active_downloads:
-                    return "processing"
-                if completed_count < len(candidate_outputs):
-                    return "downloading"
-                return "idle"
-
-            async def upsert_active_download(
-                *,
-                filename: str,
-                stage: str,
-                downloaded_bytes: int | None = None,
-                total_bytes: int | None = None,
-                percent: float | None = None,
-            ) -> None:
-                async with progress_lock:
-                    item = active_downloads.get(filename)
-                    if item is None:
-                        item = {
-                            "filename": filename,
-                            "downloaded_bytes": 0,
-                            "total_bytes": None,
-                            "percent": None,
-                            "stage": stage,
-                        }
-                        active_downloads[filename] = item
-                    else:
-                        item["stage"] = stage
-                    if downloaded_bytes is not None:
-                        item["downloaded_bytes"] = downloaded_bytes
-                    if total_bytes is not None or stage == "downloading":
-                        item["total_bytes"] = total_bytes
-                    if percent is not None:
-                        item["percent"] = percent
-                    self._emit_progress(
-                        phase=current_phase(),
-                        attempted_count=len(candidate_outputs),
-                        completed_count=completed_count,
-                        failed_count=len(failed_files),
-                        active_count=len(active_downloads),
-                        latest_available=latest_available,
-                        current_file=filename,
-                        last_downloaded=last_downloaded,
-                        active_downloads=sorted(
-                            active_downloads.values(), key=lambda item: str(item["filename"])
-                        ),
-                    )
-
-            async def complete_active_download(
-                *,
-                filename: str,
-                last_downloaded_name: str | None = None,
-            ) -> None:
-                nonlocal completed_count, last_downloaded
-                async with progress_lock:
-                    completed_count += 1
-                    active_downloads.pop(filename, None)
-                    if last_downloaded_name:
-                        last_downloaded = last_downloaded_name
-                    self._emit_progress(
-                        phase=current_phase(),
-                        attempted_count=len(candidate_outputs),
-                        completed_count=completed_count,
-                        failed_count=len(failed_files),
-                        active_count=len(active_downloads),
-                        latest_available=latest_available,
-                        current_file=filename,
-                        last_downloaded=last_downloaded,
-                        active_downloads=sorted(
-                            active_downloads.values(), key=lambda item: str(item["filename"])
-                        ),
-                    )
-
-            async def update_download_bytes(
-                filename: str,
-                downloaded_bytes: int,
-                total_bytes: int | None,
-            ) -> None:
-                percent = (
-                    round((downloaded_bytes / total_bytes) * 100, 1)
-                    if total_bytes
-                    else None
-                )
-                await upsert_active_download(
-                    filename=filename,
-                    stage="downloading",
-                    downloaded_bytes=downloaded_bytes,
-                    total_bytes=total_bytes,
-                    percent=percent,
-                )
-
-            async def _mark_ready_for_conversion(
-                source_index: int,
-                source_filename: str,
-                output_filename: str,
-                source_path: Path | None,
-            ) -> None:
-                ready_for_conversion[source_index] = (
-                    source_filename,
-                    output_filename,
-                    source_path,
-                )
-                ready_for_conversion_event.set()
-
-            async def download(source_index: int, source_filename: str) -> None:
-                output_filename = self._converter.output_filename(source_filename)
-                await upsert_active_download(filename=output_filename, stage="downloading")
-                try:
-                    async with download_semaphore:
-                        source_path = await self._download_source_if_needed(
-                            session,
-                            source_filename,
-                            progress_hook=update_download_bytes,
-                        )
-                    if source_path is None:
-                        await complete_active_download(filename=output_filename)
-                        await _mark_ready_for_conversion(
-                            source_index,
-                            source_filename,
-                            output_filename,
-                            None,
-                        )
-                        return
-
-                    await upsert_active_download(
-                        filename=output_filename,
-                        stage="queued",
-                    )
-                    await _mark_ready_for_conversion(
-                        source_index,
-                        source_filename,
-                        output_filename,
-                        source_path,
-                    )
-                except Exception as err:
-                    failed_files.append(output_filename)
-                    LOGGER.warning("Failed to download %s: %s", source_filename, err)
-                    await complete_active_download(filename=output_filename)
-                    await _mark_ready_for_conversion(
-                        source_index,
-                        source_filename,
-                        output_filename,
-                        None,
-                    )
-
-            download_tasks = [
-                asyncio.create_task(download(index, name))
-                for index, name in enumerate(candidate_sources)
-            ]
-
-            downloaded_count = 0
-            for index in range(len(candidate_sources)):
-                while index not in ready_for_conversion:
-                    await ready_for_conversion_event.wait()
-                    ready_for_conversion_event.clear()
-
-                source_filename, output_filename, source_path = ready_for_conversion.pop(index)
-                if source_path is None:
-                    continue
-
-                await upsert_active_download(
-                    filename=output_filename,
-                    stage="converting",
-                )
-                try:
-                    converted = await self._convert_source_to_tiff(
-                        source_filename,
-                        source_path,
-                    )
-                    downloaded_count += converted
-                    await complete_active_download(
-                        filename=output_filename,
-                        last_downloaded_name=output_filename if converted else None,
-                    )
-                except Exception as err:
-                    failed_files.append(output_filename)
-                    LOGGER.warning("Failed to convert %s: %s", source_filename, err)
-                    await complete_active_download(filename=output_filename)
-
-            await asyncio.gather(*download_tasks)
-
-            kept_files = self._kept_raws_on_disk()
+        candidate_sources = self._candidate_source_filenames(
+            source_filenames,
+            target_timestamps=target_timestamps,
+        )
+        candidate_outputs = [self.output_filename(filename) for filename in candidate_sources]
+        latest_available = self._latest_available_output(
+            source_filenames,
+            target_timestamps=target_timestamps,
+        )
+        LOGGER.trace(
+            "Imagery refresh plan for %s: targets=%s candidates=%s latest_available=%s",
+            self._band,
+            target_timestamps,
+            candidate_outputs,
+            latest_available,
+        )
+        reads = [
+            (source_filename, area)
+            for source_filename in candidate_sources
+            for area in areas
+            if (slot := _slot_timestamp_for_output_filename(self.output_filename(source_filename)))
+            in area.target_timestamps
+            and slot not in slots_on_disk[area.area_id]
+        ]
+        attempted_count = len(reads)
+        self._emit_progress(
+            phase="downloading" if download_missing and reads else "idle",
+            attempted_count=attempted_count,
+            completed_count=0,
+            failed_count=0,
+            active_count=0,
+            latest_available=latest_available,
+            current_file=None,
+            last_downloaded=None,
+        )
+        if not download_missing:
             return DownloadReport(
-                kept_files=kept_files,
-                downloaded_count=downloaded_count,
-                attempted_count=len(candidate_outputs),
-                failed_count=len(failed_files),
-                last_downloaded=last_downloaded,
+                kept_files=self._kept_raws_on_disk(),
+                downloaded_count=0,
+                attempted_count=0,
+                failed_count=0,
+                last_downloaded=None,
                 latest_available=latest_available,
-                failed_files=failed_files,
+                failed_files=[],
             )
 
-    async def _fetch_listing(self, session: SessionLike) -> list[str]:
+        failed_files: list[str] = []
+        downloaded_count = 0
+        bytes_read = 0
+        requests = 0
+        retries = 0
+        last_downloaded: str | None = None
+        # ponytail: one file at a time, each with its own connections; add file-level concurrency if backfill is too slow.
+        for completed_count, (source_filename, area) in enumerate(reads):
+            output_filename = f"{area.area_id}/{self.output_filename(source_filename)}"
+            self._emit_progress(
+                phase="downloading",
+                attempted_count=attempted_count,
+                completed_count=completed_count,
+                failed_count=len(failed_files),
+                active_count=1,
+                latest_available=latest_available,
+                current_file=output_filename,
+                last_downloaded=last_downloaded,
+                active_downloads=[
+                    {
+                        "filename": output_filename,
+                        "downloaded_bytes": 0,
+                        "total_bytes": None,
+                        "percent": None,
+                        "stage": "downloading",
+                    }
+                ],
+            )
+            try:
+                stats = await asyncio.to_thread(self._read_crop, source_filename, area)
+            except Exception as err:
+                # The slot stays missing, so the next cycle tries it again.
+                failed_files.append(output_filename)
+                LOGGER.warning("Failed to read %s: %s", source_filename, err)
+                continue
+            downloaded_count += 1
+            bytes_read += stats.bytes_read
+            requests += stats.requests
+            retries += stats.retries
+            last_downloaded = output_filename
+
+        return DownloadReport(
+            kept_files=self._kept_raws_on_disk(),
+            downloaded_count=downloaded_count,
+            attempted_count=attempted_count,
+            failed_count=len(failed_files),
+            last_downloaded=last_downloaded,
+            latest_available=latest_available,
+            failed_files=failed_files,
+            bytes_read=bytes_read,
+            requests=requests,
+            retries=retries,
+            listing_seconds=listing_seconds,
+            elapsed_seconds=perf_counter() - started_at,
+        )
+
+    def _read_crop(self, filename: str, area: AreaCrop) -> CropStats:
+        stats = write_abi_crop(
+            f"{self._base_url}{self._source_key_for_filename(filename)}",
+            self._band,
+            self._raw_dir / area.area_id / self.output_filename(filename),
+            area.bounds,
+            user_agent=REQUEST_HEADERS["User-Agent"],
+        )
+        LOGGER.info(
+            "METRIC crop area=%s band=%s slot=%s bytes=%s requests=%s retries=%s rows=%s "
+            "tiff_bytes=%s network_s=%.2f decode_s=%.2f reproject_s=%.2f "
+            "write_s=%.2f total_s=%.2f mb_per_s=%.2f",
+            area.area_id,
+            self._band,
+            _slot_timestamp_for_output_filename(filename),
+            stats.bytes_read,
+            stats.requests,
+            stats.retries,
+            stats.rows,
+            stats.tiff_bytes,
+            stats.network_seconds,
+            stats.decode_seconds,
+            stats.reproject_seconds,
+            stats.write_seconds,
+            stats.total_seconds,
+            stats.bytes_read / 1e6 / max(stats.network_seconds, 1e-6),
+        )
+        return stats
+
+    def _slots_on_disk(self, area_id: str) -> set[str | None]:
+        return {
+            _slot_timestamp_for_output_filename(path.name)
+            for path in (self._raw_dir / area_id).glob("*.tif")
+            if path.stat().st_size > 0
+        }
+
+    async def _fetch_listing(
+        self,
+        session: SessionLike,
+        missing_slots: tuple[str, ...] = (),
+    ) -> list[str]:
         collected: set[str] = set()
         last_error: Exception | None = None
-        for prefix in self._listing_prefixes():
+        for prefix in self._listing_prefixes(missing_slots):
             encoded_prefix = quote(prefix, safe="/")
             url = f"{self._base_url}?prefix={encoded_prefix}&max-keys=1000"
             LOGGER.trace("Fetching imagery listing prefix for %s: %s", self._band, url)
             for attempt in range(1, DOWNLOAD_RETRY_ATTEMPTS + 1):
                 try:
                     async with session.get(url, timeout=LISTING_TIMEOUT) as response:
-                        response.raise_for_status()
+                        _raise_for_response(response)
                         payload = await response.text()
                     parsed = self.parse_listing(payload)
                     LOGGER.trace(
@@ -452,157 +363,6 @@ class GoesDownloader:
         if last_error is not None:
             raise last_error
         return sorted(collected, key=_filename_timestamp_or_min, reverse=True)
-
-    async def _download_source_if_needed(
-        self,
-        session: SessionLike,
-        filename: str,
-        *,
-        progress_hook: ProgressHook | None = None,
-    ) -> Path | None:
-        output_filename = self.output_filename(filename)
-        destination = self._raw_dir / output_filename
-        if destination.exists():
-            try:
-                if destination.stat().st_size > 0:
-                    LOGGER.trace(
-                        "Imagery cache hit for %s: destination=%s",
-                        output_filename,
-                        destination,
-                    )
-                    LOGGER.info(
-                        "Reusing existing raw TIFF without revalidation: %s (size=%s bytes)",
-                        output_filename,
-                        destination.stat().st_size,
-                    )
-                    return None
-            except OSError:
-                LOGGER.warning("Failed to stat cached raw TIFF %s", destination, exc_info=True)
-            destination.unlink(missing_ok=True)
-
-        source_path = self._source_dir / filename
-        if source_path.exists():
-            LOGGER.trace("Reusing staged imagery source %s from %s", filename, source_path)
-            return source_path
-
-        temporary_path = source_path.with_suffix(source_path.suffix + ".part")
-        source_key = self._source_key_for_filename(filename)
-        for attempt in range(1, DOWNLOAD_RETRY_ATTEMPTS + 1):
-            temporary_path.unlink(missing_ok=True)
-            source_path.unlink(missing_ok=True)
-            try:
-                LOGGER.trace(
-                    "Downloading imagery source %s to staging: temp=%s final=%s attempt=%s",
-                    filename,
-                    temporary_path,
-                    source_path,
-                    attempt,
-                )
-                async with session.get(f"{self._base_url}{source_key}") as response:
-                    response.raise_for_status()
-                    total_bytes = _int_or_none(response.headers.get("Content-Length"))
-                    downloaded_bytes = 0
-                    with temporary_path.open("wb") as handle:
-                        async for chunk in response.content.iter_chunked(1024 * 128):
-                            handle.write(chunk)
-                            downloaded_bytes += len(chunk)
-                            if progress_hook is not None:
-                                await progress_hook(output_filename, downloaded_bytes, total_bytes)
-
-                temporary_path.replace(source_path)
-                LOGGER.trace("Imagery download completed for %s -> %s", filename, source_path)
-                return source_path
-            except DOWNLOAD_RETRYABLE_ERRORS as err:
-                temporary_path.unlink(missing_ok=True)
-                source_path.unlink(missing_ok=True)
-                if attempt >= DOWNLOAD_RETRY_ATTEMPTS:
-                    raise
-                LOGGER.warning(
-                    "Transient failure downloading %s (attempt %s/%s): %s",
-                    filename,
-                    attempt,
-                    DOWNLOAD_RETRY_ATTEMPTS,
-                    err,
-                )
-                await asyncio.sleep(attempt)
-            except Exception:
-                temporary_path.unlink(missing_ok=True)
-                source_path.unlink(missing_ok=True)
-                raise
-
-        return None
-
-    async def _convert_source_to_tiff(self, filename: str, source_path: Path) -> int:
-        output_filename = self.output_filename(filename)
-        destination = self._raw_dir / output_filename
-        if destination.exists():
-            try:
-                if destination.stat().st_size > 0:
-                    LOGGER.trace(
-                        "Skipping imagery convert because cached TIFF already exists: %s",
-                        destination,
-                    )
-                    LOGGER.info(
-                        "Reusing existing raw TIFF without revalidation: %s (size=%s bytes)",
-                        output_filename,
-                        destination.stat().st_size,
-                    )
-                    source_path.unlink(missing_ok=True)
-                    return 0
-            except OSError:
-                LOGGER.warning("Failed to stat cached raw TIFF %s", destination, exc_info=True)
-            LOGGER.warning("Replacing empty/unreadable raw TIFF before convert: %s", destination)
-            destination.unlink(missing_ok=True)
-
-        try:
-            started_at = perf_counter()
-            LOGGER.trace(
-                "Starting imagery convert for %s: source=%s destination=%s",
-                filename,
-                source_path,
-                destination,
-            )
-            await asyncio.to_thread(self._converter.convert, source_path, destination)
-            exists_after_convert = destination.exists()
-            size_after_convert = destination.stat().st_size if exists_after_convert else None
-            duration_seconds = perf_counter() - started_at
-            LOGGER.trace(
-                "Finished imagery convert for %s in %.2fs (exists=%s size=%s)",
-                filename,
-                duration_seconds,
-                exists_after_convert,
-                size_after_convert,
-            )
-            LOGGER.info(
-                "Downloaded NOAA raw frame %s as %s (exists=%s, size=%s bytes)",
-                filename,
-                output_filename,
-                exists_after_convert,
-                size_after_convert,
-            )
-            source_path.unlink(missing_ok=True)
-            return 1
-        except Exception:
-            source_path.unlink(missing_ok=True)
-            destination.unlink(missing_ok=True)
-            raise
-
-    @staticmethod
-    def _is_expected_brazil_tiff(path: Path) -> bool:
-        try:
-            with rasterio.open(path) as dataset:
-                left, bottom, right, top = dataset.bounds
-        except Exception:
-            return False
-
-        expected_left, expected_bottom, expected_right, expected_top = BRAZIL_LONLAT_BBOX
-        tolerance = 1.0
-        return (
-            left <= expected_left + tolerance
-            and bottom <= expected_bottom + tolerance
-            and right >= expected_right - tolerance
-            and top >= expected_top - tolerance
-        )
 
     def _emit_progress(self, **payload: object) -> None:
         if self._progress_callback is None:
@@ -654,39 +414,29 @@ class GoesDownloader:
 
     def _cached_source_filenames_from_disk(self) -> list[str]:
         return sorted(
-            (
-                self.source_filename(path.name)
-                for path in self._raw_dir.glob("*.tif")
-            ),
+            {self.source_filename(path.name) for path in self._raw_dir.rglob("*.tif")},
             key=_filename_timestamp_or_min,
             reverse=True,
         )
 
     def _kept_raws_on_disk(self) -> list[Path]:
         return sorted(
-            self._raw_dir.glob("*.tif"),
+            self._raw_dir.rglob("*.tif"),
             key=lambda path: _filename_timestamp_or_min(path.name),
             reverse=True,
         )
 
-    def _listing_prefixes(self) -> list[str]:
-        prefixes: list[str] = []
-        now = _floor_to_slot(_utc_now() - timedelta(minutes=10))
-        seen: set[str] = set()
-        for hour_offset in range(LOOKBACK_HOURS):
-            hour = now - timedelta(hours=hour_offset)
-            prefix = NODD_LISTING_PREFIX_TEMPLATE.format(
+    def _listing_prefixes(self, missing_slots: tuple[str, ...] = ()) -> list[str]:
+        return [
+            NODD_LISTING_PREFIX_TEMPLATE.format(
                 product=NODD_PRODUCT_PREFIX,
                 band=self._band_token,
                 year=hour.strftime("%Y"),
                 julian_day=hour.strftime("%j"),
                 hour=hour.strftime("%H"),
             )
-            if prefix in seen:
-                continue
-            seen.add(prefix)
-            prefixes.append(prefix)
-        return prefixes
+            for hour in _listing_hours(missing_slots)
+        ]
 
     @staticmethod
     def _source_key_for_filename(filename: str) -> str:
@@ -701,23 +451,24 @@ class GlmDownloader:
     def __init__(
         self,
         base_url: str,
-        source_dir: Path,
         raw_dir: Path,
         raw_history: int,
         *,
         progress_callback: Callable[[dict[str, object]], None] | None = None,
     ):
         self._base_url = base_url.rstrip("/") + "/"
-        self._source_dir = source_dir
         self._raw_dir = raw_dir
         self._raw_history = raw_history
         self._progress_callback = progress_callback
+        self._bytes_read = 0
+        self._requests = 0
+        self._retries = 0
+        self._layout_checked_at = float("-inf")
         self._key_pattern = re.compile(
             rf"(?P<key>{re.escape(GLM_PRODUCT_PREFIX)}/\d{{4}}/\d{{3}}/\d{{2}}/"
             rf"OR_{re.escape(GLM_PRODUCT_PREFIX)}_G19_"
             rf"s(?P<timestamp>\d{{13,14}})_e\d{{13,14}}_c\d{{13,14}}\.nc)"
         )
-        self._source_dir.mkdir(parents=True, exist_ok=True)
         self._raw_dir.mkdir(parents=True, exist_ok=True)
 
     def output_filename(self, source_filename: str) -> str:
@@ -747,17 +498,23 @@ class GlmDownloader:
         download_missing: bool = True,
         target_timestamps: tuple[str, ...] | None = None,
     ) -> DownloadReport:
-        connector = aiohttp.TCPConnector(
-            limit=DOWNLOAD_CONCURRENCY,
-            force_close=True,
-            family=socket.AF_INET,
+        started_at = perf_counter()
+        connector = aiohttp.TCPConnector(limit=GLM_CONCURRENCY, family=socket.AF_INET)
+        self._bytes_read = 0
+        self._requests = 0
+        self._retries = 0
+        missing_slots = tuple(
+            slot
+            for slot in target_timestamps or ()
+            if not (self._raw_dir / f"{slot}_glm.json").exists()
         )
         async with aiohttp.ClientSession(
             timeout=DOWNLOAD_TIMEOUT,
             connector=connector,
             headers=REQUEST_HEADERS,
         ) as session:
-            source_filenames = await self._fetch_listing(session)
+            source_filenames = await self._fetch_listing(session, missing_slots)
+            listing_seconds = perf_counter() - started_at
             candidate_sources, latest_slot_output = self._candidate_source_filenames(
                 source_filenames,
                 target_timestamps=target_timestamps,
@@ -791,13 +548,24 @@ class GlmDownloader:
                     failed_files=[],
                 )
 
-            download_semaphore = asyncio.Semaphore(DOWNLOAD_CONCURRENCY)
+            if candidate_sources and not await self._layout_verified(session, candidate_sources[0]):
+                return DownloadReport(
+                    kept_files=self._kept_raws_on_disk(),
+                    downloaded_count=0,
+                    attempted_count=len(candidate_sources),
+                    failed_count=len(candidate_sources),
+                    last_downloaded=None,
+                    latest_available=latest_slot_output,
+                    failed_files=candidate_sources,
+                )
+
+            download_semaphore = asyncio.Semaphore(GLM_CONCURRENCY)
             completed_count = 0
             failed_files: list[str] = []
             last_downloaded: str | None = None
             active_downloads: dict[str, dict[str, object]] = {}
             progress_lock = asyncio.Lock()
-            ready_for_conversion: dict[int, tuple[str, str, Path | None]] = {}
+            ready_for_conversion: dict[int, tuple[str, str, list[dict[str, float]] | None]] = {}
             ready_for_conversion_event = asyncio.Event()
 
             def current_phase() -> str:
@@ -880,34 +648,16 @@ class GlmDownloader:
                         ),
                     )
 
-            async def update_download_bytes(
-                filename: str,
-                downloaded_bytes: int,
-                total_bytes: int | None,
-            ) -> None:
-                percent = (
-                    round((downloaded_bytes / total_bytes) * 100, 1)
-                    if total_bytes
-                    else None
-                )
-                await upsert_active_download(
-                    filename=filename,
-                    stage="downloading",
-                    downloaded_bytes=downloaded_bytes,
-                    total_bytes=total_bytes,
-                    percent=percent,
-                )
-
             async def _mark_ready_for_conversion(
                 source_index: int,
                 source_filename: str,
                 slot_output: str,
-                source_path: Path | None,
+                flashes: list[dict[str, float]] | None,
             ) -> None:
                 ready_for_conversion[source_index] = (
                     source_filename,
                     slot_output,
-                    source_path,
+                    flashes,
                 )
                 ready_for_conversion_event.set()
 
@@ -916,27 +666,17 @@ class GlmDownloader:
                 await upsert_active_download(filename=filename, stage="downloading")
                 try:
                     async with download_semaphore:
-                        source_path = await self._download_source_if_needed(
+                        flashes = await self._read_flash_columns(
                             session,
-                            filename,
-                            progress_hook=update_download_bytes,
+                            self._source_key_for_filename(filename),
                         )
-                    if source_path is None:
-                        await complete_active_download(filename=filename)
-                        await _mark_ready_for_conversion(
-                            source_index,
-                            filename,
-                            slot_output,
-                            None,
-                        )
-                        return
 
                     await upsert_active_download(filename=filename, stage="queued")
                     await _mark_ready_for_conversion(
                         source_index,
                         filename,
                         slot_output,
-                        source_path,
+                        flashes,
                     )
                 except Exception as err:
                     failed_files.append(filename)
@@ -960,13 +700,13 @@ class GlmDownloader:
                     await ready_for_conversion_event.wait()
                     ready_for_conversion_event.clear()
 
-                source_filename, slot_output, source_path = ready_for_conversion.pop(index)
-                if source_path is None:
+                source_filename, slot_output, flashes = ready_for_conversion.pop(index)
+                if flashes is None:
                     continue
 
                 await upsert_active_download(filename=source_filename, stage="converting")
                 try:
-                    processed = await self._merge_source_into_slot(source_filename, source_path)
+                    processed = self._merge_flashes_into_slot(source_filename, flashes)
                     downloaded_count += processed
                     await complete_active_download(
                         filename=source_filename,
@@ -988,19 +728,100 @@ class GlmDownloader:
             last_downloaded=last_downloaded,
             latest_available=latest_slot_output,
             failed_files=failed_files,
+            bytes_read=self._bytes_read,
+            requests=self._requests,
+            retries=self._retries,
+            listing_seconds=listing_seconds,
+            elapsed_seconds=perf_counter() - started_at,
         )
 
-    async def _fetch_listing(self, session: SessionLike) -> list[str]:
+    async def _layout_verified(self, session: SessionLike, filename: str) -> bool:
+        """False stops GLM until the check passes, since a moved node yields valid-looking flashes."""
+        if perf_counter() - self._layout_checked_at < GLM_LAYOUT_CHECK_SECONDS:
+            return True
+        source_key = self._source_key_for_filename(filename)
+        try:
+            direct = await self._read_flash_columns(session, source_key)
+            reference = await asyncio.to_thread(
+                read_glm_flashes_with_hdf5,
+                f"{self._base_url}{source_key}",
+                user_agent=REQUEST_HEADERS["User-Agent"],
+            )
+        except Exception as err:
+            LOGGER.warning("GLM layout check inconclusive for %s: %s", filename, err)
+            return False
+        if direct != reference:
+            LOGGER.error("GLM layout changed, stopping GLM reads: mismatch in %s", filename)
+            return False
+        self._layout_checked_at = perf_counter()
+        return True
+
+    async def _read_flash_columns(
+        self,
+        session: SessionLike,
+        source_key: str,
+    ) -> list[dict[str, float]]:
+        latitude_chunks = parse_glm_node(
+            await self._get_range(session, source_key, GLM_LAT_NODE, GLM_LAT_NODE + GLM_NODE_SIZE)
+        )
+        longitude_chunks = parse_glm_node(
+            await self._get_range(session, source_key, GLM_LON_NODE, GLM_LON_NODE + GLM_NODE_SIZE)
+        )
+        ranges = {
+            (start, end): await self._get_range(session, source_key, start, end)
+            for start, end in glm_read_ranges(latitude_chunks + longitude_chunks)
+        }
+        return valid_flash_points(
+            decode_glm_chunks(latitude_chunks, ranges),
+            decode_glm_chunks(longitude_chunks, ranges),
+        )
+
+    async def _get_range(
+        self,
+        session: SessionLike,
+        source_key: str,
+        start: int,
+        end: int,
+    ) -> bytes:
+        headers = {"Range": f"bytes={start}-{end - 1}"}
+        for attempt in range(1, DOWNLOAD_RETRY_ATTEMPTS + 1):
+            try:
+                async with session.get(
+                    f"{self._base_url}{source_key}",
+                    headers=headers,
+                    timeout=LISTING_TIMEOUT,
+                ) as response:
+                    _raise_for_response(response)
+                    if response.status != 206:
+                        raise ValueError(f"Range ignorado: HTTP {response.status}")
+                    data = await response.read()
+                if len(data) != end - start:
+                    raise ValueError(f"Leitura curta: {len(data)} de {end - start} bytes")
+                self._bytes_read += len(data)
+                self._requests += 1
+                return data
+            except DOWNLOAD_RETRYABLE_ERRORS:
+                if attempt >= DOWNLOAD_RETRY_ATTEMPTS:
+                    raise
+                self._retries += 1
+                await asyncio.sleep(attempt)
+        raise AssertionError("unreachable")
+
+    async def _fetch_listing(
+        self,
+        session: SessionLike,
+        missing_slots: tuple[str, ...] = (),
+    ) -> list[str]:
         collected: set[str] = set()
         last_error: Exception | None = None
-        for prefix in self._listing_prefixes():
+        for prefix in self._listing_prefixes(missing_slots):
             encoded_prefix = quote(prefix, safe="/")
             url = f"{self._base_url}?prefix={encoded_prefix}&max-keys=1000"
             LOGGER.trace("Fetching GLM listing prefix: %s", url)
             for attempt in range(1, DOWNLOAD_RETRY_ATTEMPTS + 1):
                 try:
                     async with session.get(url, timeout=LISTING_TIMEOUT) as response:
-                        response.raise_for_status()
+                        _raise_for_response(response)
                         payload = await response.text()
                     parsed = self.parse_listing(payload)
                     LOGGER.trace("Fetched GLM listing prefix with %s file(s)", len(parsed))
@@ -1030,119 +851,29 @@ class GlmDownloader:
             raise last_error
         return []
 
-    async def _download_source_if_needed(
-        self,
-        session: SessionLike,
-        filename: str,
-        *,
-        progress_hook: ProgressHook | None = None,
-    ) -> Path | None:
-        source_path = self._source_dir / filename
-        if source_path.exists():
-            LOGGER.trace("Reusing staged GLM source %s from %s", filename, source_path)
-            return source_path
-
-        temporary_path = source_path.with_suffix(source_path.suffix + ".part")
-        source_key = self._source_key_for_filename(filename)
-        for attempt in range(1, DOWNLOAD_RETRY_ATTEMPTS + 1):
-            temporary_path.unlink(missing_ok=True)
-            source_path.unlink(missing_ok=True)
-            try:
-                LOGGER.trace(
-                    "Downloading GLM source %s to staging: temp=%s final=%s attempt=%s",
-                    filename,
-                    temporary_path,
-                    source_path,
-                    attempt,
-                )
-                async with session.get(f"{self._base_url}{source_key}") as response:
-                    response.raise_for_status()
-                    total_bytes = _int_or_none(response.headers.get("Content-Length"))
-                    downloaded_bytes = 0
-                    with temporary_path.open("wb") as handle:
-                        async for chunk in response.content.iter_chunked(1024 * 128):
-                            handle.write(chunk)
-                            downloaded_bytes += len(chunk)
-                            if progress_hook is not None:
-                                await progress_hook(filename, downloaded_bytes, total_bytes)
-
-                temporary_path.replace(source_path)
-                LOGGER.trace("GLM download completed for %s -> %s", filename, source_path)
-                return source_path
-            except DOWNLOAD_RETRYABLE_ERRORS as err:
-                temporary_path.unlink(missing_ok=True)
-                source_path.unlink(missing_ok=True)
-                if attempt >= DOWNLOAD_RETRY_ATTEMPTS:
-                    raise
-                LOGGER.warning(
-                    "Transient failure downloading %s (attempt %s/%s): %s",
-                    filename,
-                    attempt,
-                    DOWNLOAD_RETRY_ATTEMPTS,
-                    err,
-                )
-                await asyncio.sleep(attempt)
-            except Exception:
-                temporary_path.unlink(missing_ok=True)
-                source_path.unlink(missing_ok=True)
-                raise
-
-        return None
-
-    async def _merge_source_into_slot(self, filename: str, source_path: Path) -> int:
+    def _merge_flashes_into_slot(self, filename: str, flashes: list[dict[str, float]]) -> int:
         output_filename = self.output_filename(filename)
         destination = self._raw_dir / output_filename
-        try:
-            started_at = perf_counter()
-            record = self._load_slot_record(destination)
-            processed_sources = set(record["source_filenames"])
-            if filename in processed_sources:
-                LOGGER.trace(
-                    "Skipping GLM merge because source already exists in slot %s: %s",
-                    output_filename,
-                    filename,
-                )
-                source_path.unlink(missing_ok=True)
-                return 0
-
-            flashes = await asyncio.to_thread(self._extract_flash_points, source_path)
-            record["source_filenames"].append(filename)
-            record["source_filenames"].sort(reverse=True)
-            record["flashes"].extend(flashes)
-            self._write_slot_record(destination, record)
+        record = self._load_slot_record(destination)
+        if filename in record["source_filenames"]:
             LOGGER.trace(
-                "Merged GLM source %s into %s with %s flash(es) in %.2fs",
-                filename,
+                "Skipping GLM merge because source already exists in slot %s: %s",
                 output_filename,
-                len(flashes),
-                perf_counter() - started_at,
+                filename,
             )
-            source_path.unlink(missing_ok=True)
-            return 1
-        except Exception:
-            source_path.unlink(missing_ok=True)
-            raise
+            return 0
 
-    @staticmethod
-    def _extract_flash_points(source_path: Path) -> list[dict[str, float]]:
-        flashes: list[dict[str, float]] = []
-        with netCDF4.Dataset(source_path, "r") as dataset:
-            flash_lat = dataset.variables.get("flash_lat")
-            flash_lon = dataset.variables.get("flash_lon")
-            if flash_lat is None or flash_lon is None:
-                return flashes
-            latitudes = flash_lat[:]
-            longitudes = flash_lon[:]
-            for lat, lon in zip(latitudes, longitudes, strict=False):
-                try:
-                    latitude = float(lat)
-                    longitude = float(lon)
-                except (TypeError, ValueError):
-                    continue
-                if not (-90.0 <= latitude <= 90.0 and -180.0 <= longitude <= 180.0):
-                    continue
-                flashes.append({"lat": latitude, "lon": longitude})
-        return flashes
+        record["source_filenames"].append(filename)
+        record["source_filenames"].sort(reverse=True)
+        record["flashes"].extend(flashes)
+        self._write_slot_record(destination, record)
+        LOGGER.trace(
+            "Merged GLM source %s into %s with %s flash(es)",
+            filename,
+            output_filename,
+            len(flashes),
+        )
+        return 1
 
     @staticmethod
     def _load_slot_record(path: Path) -> GlmSlotRecord:
@@ -1242,23 +973,16 @@ class GlmDownloader:
             reverse=True,
         )
 
-    def _listing_prefixes(self) -> list[str]:
-        prefixes: list[str] = []
-        now = _floor_to_slot(_utc_now() - timedelta(minutes=10))
-        seen: set[str] = set()
-        for hour_offset in range(LOOKBACK_HOURS):
-            hour = now - timedelta(hours=hour_offset)
-            prefix = GLM_LISTING_PREFIX_TEMPLATE.format(
+    def _listing_prefixes(self, missing_slots: tuple[str, ...] = ()) -> list[str]:
+        return [
+            GLM_LISTING_PREFIX_TEMPLATE.format(
                 product=GLM_PRODUCT_PREFIX,
                 year=hour.strftime("%Y"),
                 julian_day=hour.strftime("%j"),
                 hour=hour.strftime("%H"),
             )
-            if prefix in seen:
-                continue
-            seen.add(prefix)
-            prefixes.append(prefix)
-        return prefixes
+            for hour in _listing_hours(missing_slots)
+        ]
 
     def _source_key_for_filename(self, filename: str) -> str:
         match = _filename_timestamp(filename)
@@ -1279,13 +1003,24 @@ class GlmDownloader:
         self._progress_callback(payload)
 
 
-def _int_or_none(value: str | None) -> int | None:
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except ValueError:
-        return None
+def _listing_hours(missing_slots: tuple[str, ...]) -> list[datetime]:
+    """Recent hours plus the ones a backfill needs; listing all 24 every poll would be wasteful."""
+    now = _floor_to_slot(_utc_now() - timedelta(minutes=10))
+    recent = (now - timedelta(hours=offset) for offset in range(LOOKBACK_HOURS))
+    backfill = (
+        datetime.strptime(slot, "%Y%j%H%M").replace(tzinfo=UTC)
+        for slot in missing_slots
+    )
+    hours: dict[str, datetime] = {}
+    for moment in (*recent, *backfill):
+        hours.setdefault(moment.strftime("%Y%j%H"), moment)
+    return list(hours.values())
+
+
+def _raise_for_response(response: Any) -> None:
+    if response.status in RETRYABLE_STATUS:
+        raise TransientHttpError(f"HTTP {response.status}")
+    response.raise_for_status()
 
 
 def _filename_timestamp(filename: str) -> datetime | None:
