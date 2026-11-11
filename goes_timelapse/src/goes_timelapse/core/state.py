@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from datetime import UTC, datetime
 import logging
 from pathlib import Path
@@ -59,10 +60,8 @@ class StateStore:
         return connection
 
     def _reopen_locked(self) -> None:
-        try:
+        with contextlib.suppress(sqlite3.Error):
             self._connection.close()
-        except sqlite3.Error:
-            pass
         self._connection = self._connect()
 
     def _initialize(self) -> None:
@@ -276,7 +275,7 @@ class StateStore:
 
         def operation() -> None:
             self._connection.execute(
-                f"UPDATE tracked_areas SET {assignments} WHERE area_id = :area_id",
+                f"UPDATE tracked_areas SET {assignments} WHERE area_id = :area_id",  # noqa: S608 - column names are fixed, values are bound
                 updates,
             )
 
@@ -307,7 +306,7 @@ class StateStore:
                 try:
                     operation()
                     self._connection.commit()
-                    return
+                    return  # noqa: TRY300 - return inside the retry loop
                 except sqlite3.OperationalError as err:
                     if attempt == 0 and self._is_retryable_operational_error(err):
                         LOGGER.warning(

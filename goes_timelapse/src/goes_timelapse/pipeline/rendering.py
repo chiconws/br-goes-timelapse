@@ -214,7 +214,7 @@ class AreaRenderer:
             minimum_output_dimension = min(720, self._settings.max_render_dimension)
         target_dimension = min(
             self._settings.max_render_dimension,
-            max(max(crop_width, crop_height), minimum_output_dimension),
+            max(crop_width, crop_height, minimum_output_dimension),
         )
         output_width = target_dimension
         output_height = target_dimension
@@ -318,7 +318,7 @@ class AreaRenderer:
         ]
         if polygon_points:
             draw.line(
-                polygon_points + [polygon_points[0]], fill=(255, 214, 10, 255), width=2
+                [*polygon_points, polygon_points[0]], fill=(255, 214, 10, 255), width=2
             )
 
         lightning_points = self._scale_points_to_output(
@@ -328,7 +328,7 @@ class AreaRenderer:
             image.size[1],
         )
         if lightning_points:
-            lightning_radius = max(2, int(round(image.size[0] * 0.0045)))
+            lightning_radius = max(2, round(image.size[0] * 0.0045))
             for lightning_x, lightning_y in lightning_points:
                 draw.ellipse(
                     (
@@ -344,7 +344,7 @@ class AreaRenderer:
 
         if plan.scaled_marker is not None:
             marker_x, marker_y = plan.scaled_marker
-            marker_radius = max(4, int(round(image.size[0] * 0.008)))
+            marker_radius = max(4, round(image.size[0] * 0.008))
             draw.ellipse(
                 (
                     marker_x - marker_radius,
@@ -556,10 +556,10 @@ class AreaRenderer:
         right_col, bottom_row = inverse_transform * (max_x, min_y)
 
         margin = 24
-        col_off = int(math.floor(min(left_col, right_col))) - margin
-        row_off = int(math.floor(min(top_row, bottom_row))) - margin
-        col_max = int(math.ceil(max(left_col, right_col))) + margin
-        row_max = int(math.ceil(max(top_row, bottom_row))) + margin
+        col_off = math.floor(min(left_col, right_col)) - margin
+        row_off = math.floor(min(top_row, bottom_row)) - margin
+        col_max = math.ceil(max(left_col, right_col)) + margin
+        row_max = math.ceil(max(top_row, bottom_row)) + margin
 
         col_off = min(max(col_off, 0), max(src.width - 1, 0))
         row_off = min(max(row_off, 0), max(src.height - 1, 0))

@@ -88,7 +88,7 @@ class Settings:
         package_dir = Path(__file__).resolve().parent.parent
         data_dir = _env_path("GOES_DATA_DIR", "/data/goes_timelapse")
         state_dir = _env_path("GOES_STATE_DIR", "/config/goes_timelapse/state")
-        work_dir = _env_path("GOES_WORK_DIR", "/tmp/goes_timelapse")
+        work_dir = _env_path("GOES_WORK_DIR", "/tmp/goes_timelapse")  # noqa: S108 - container-private /tmp
         requested_scratch_dir = _env_path(
             "GOES_SCRATCH_DIR",
             str(data_dir / "tmp"),
@@ -226,7 +226,6 @@ def _resolve_scratch_dir(
         )
     try:
         _ensure_writable_dir(requested_scratch_dir)
-        return requested_scratch_dir, None
     except OSError as err:
         _ensure_writable_dir(fallback_scratch_dir)
         return (
@@ -236,6 +235,7 @@ def _resolve_scratch_dir(
                 f"usando fallback '{fallback_scratch_dir}' ({err})"
             ),
         )
+    return requested_scratch_dir, None
 
 
 def _resolve_source_dir(
@@ -254,7 +254,6 @@ def _resolve_source_dir(
         )
     try:
         _ensure_writable_dir(requested_source_dir)
-        return requested_source_dir, None
     except OSError as err:
         _ensure_writable_dir(fallback_source_dir)
         return (
@@ -264,6 +263,7 @@ def _resolve_source_dir(
                 f"usando fallback '{fallback_source_dir}' ({err})"
             ),
         )
+    return requested_source_dir, None
 
 
 def _ensure_writable_dir(path: Path) -> None:

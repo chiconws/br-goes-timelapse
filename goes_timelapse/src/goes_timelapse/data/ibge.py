@@ -101,13 +101,13 @@ def _load_json_url(url: str, *, timeout_seconds: int) -> object:
 
 def _geometry_from_geojson(area_id: str, payload: object) -> AreaGeometry:
     if not isinstance(payload, dict):
-        raise ValueError("Unexpected GeoJSON response shape")
+        raise ValueError("Unexpected GeoJSON response shape")  # noqa: TRY004 - malformed payload is a ValueError
     features = payload.get("features")
     if not isinstance(features, list) or not features:
         raise ValueError("No GeoJSON features returned by IBGE")
     geometry = features[0].get("geometry")
     if not isinstance(geometry, dict):
-        raise ValueError("Malformed GeoJSON geometry")
+        raise ValueError("Malformed GeoJSON geometry")  # noqa: TRY004 - malformed payload is a ValueError
 
     rings = _extract_exterior_rings(geometry)
     if not rings:
@@ -151,7 +151,7 @@ def _rounded_bounds(
 
 def _coerce_float(value: object) -> float:
     if not isinstance(value, int | float | str):
-        raise ValueError("Invalid geometry coordinate")
+        raise ValueError("Invalid geometry coordinate")  # noqa: TRY004 - malformed payload is a ValueError
     return float(value)
 
 

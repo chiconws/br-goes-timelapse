@@ -149,7 +149,7 @@ class GoesDownloader:
 
     def parse_listing(self, xml_payload: str) -> list[str]:
         """Return the product file names in an S3 listing."""
-        root = ET.fromstring(xml_payload)
+        root = ET.fromstring(xml_payload)  # noqa: S314 - NOAA S3 listing fetched over HTTPS
         keys: list[tuple[str, str]] = []
         for node in root.findall("s3:Contents", S3_XML_NAMESPACE):
             key_node = node.find("s3:Key", S3_XML_NAMESPACE)
@@ -286,7 +286,7 @@ class GoesDownloader:
             )
             try:
                 stats = await asyncio.to_thread(self._read_crop, source_filename, area)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one bad file must not stop the cycle
                 # The slot stays missing, so the next cycle tries it again.
                 failed_files.append(output_filename)
                 LOGGER.warning("Failed to read %s: %s", source_filename, err)
@@ -518,7 +518,7 @@ class GlmDownloader:
 
     def parse_listing(self, xml_payload: str) -> list[str]:
         """Return the GLM file names in an S3 listing."""
-        root = ET.fromstring(xml_payload)
+        root = ET.fromstring(xml_payload)  # noqa: S314 - NOAA S3 listing fetched over HTTPS
         keys: list[tuple[str, str]] = []
         for node in root.findall("s3:Contents", S3_XML_NAMESPACE):
             key_node = node.find("s3:Key", S3_XML_NAMESPACE)
@@ -725,7 +725,7 @@ class GlmDownloader:
                         slot_output,
                         flashes,
                     )
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - one bad file must not stop the cycle
                     failed_files.append(filename)
                     LOGGER.warning("Failed to download %s: %s", filename, err)
                     await complete_active_download(filename=filename)
@@ -761,7 +761,7 @@ class GlmDownloader:
                         filename=source_filename,
                         last_downloaded_name=slot_output if processed else None,
                     )
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - one bad file must not stop the cycle
                     failed_files.append(source_filename)
                     LOGGER.warning("Failed to convert %s: %s", source_filename, err)
                     await complete_active_download(filename=source_filename)
@@ -796,7 +796,7 @@ class GlmDownloader:
                 f"{self._base_url}{source_key}",
                 user_agent=REQUEST_HEADERS["User-Agent"],
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - any failure makes the check inconclusive
             LOGGER.warning("GLM layout check inconclusive for %s: %s", filename, err)
             return False
         if direct != reference:
@@ -856,7 +856,7 @@ class GlmDownloader:
                     )
                 self._bytes_read += len(data)
                 self._requests += 1
-                return data
+                return data  # noqa: TRY300 - return inside the retry loop
             except DOWNLOAD_RETRYABLE_ERRORS:
                 if attempt >= DOWNLOAD_RETRY_ATTEMPTS:
                     raise
@@ -1009,7 +1009,7 @@ class GlmDownloader:
                 record = self._load_slot_record(
                     self._raw_dir / f"{slot_timestamp}_glm.json"
                 )
-                processed = set(str(name) for name in record["source_filenames"])
+                processed = {str(name) for name in record["source_filenames"]}
                 processed_by_slot[slot_timestamp] = processed
             if filename in processed:
                 continue
