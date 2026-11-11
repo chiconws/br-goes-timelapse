@@ -46,7 +46,7 @@ GLM_LAYOUT_CHECK_SECONDS = 3600
 LOOKBACK_HOURS = 4
 REQUEST_HEADERS = {
     "Accept-Encoding": "identity",
-    "User-Agent": "br-goes-timelapse/1.1.2",
+    "User-Agent": "br-goes-timelapse/1.2.0",
 }
 LISTING_TIMEOUT = aiohttp.ClientTimeout(total=45, connect=15, sock_connect=15, sock_read=20)
 DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=None, connect=30, sock_connect=30, sock_read=900)
