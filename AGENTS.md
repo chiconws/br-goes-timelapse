@@ -40,6 +40,8 @@ Git hook: `.venv/bin/prek install` once per clone. Contributor setup: `CONTRIBUT
 - Python **3.11** for `.venv`, CI, ruff `target-version`, mypy and Pyright: it is the `python3` of the add-on base image (Debian bookworm), and `numpy<2` has no 3.14 wheels.
 - No PHACC: the tests use plain `pytest` + `pytest-asyncio`.
 - `CHANGELOG.md` is kept by hand: the Supervisor shows it in the add-on update dialog.
-- User-facing status strings are generated in pt-BR in Python (no translation layer); codespell ignores `erro`, `atual`, `limite`.
+- User-facing status strings are generated in pt-BR in Python (no translation layer); codespell ignores `erro`, `atual`, `limite` and the IBGE field `nome`.
 - Prettier runs on JSON/YAML only (the frontend is not reformatted).
 - Release tag must match `version` in `goes_timelapse/config.yaml`.
+- Ruff `SLF001` is off in `tests/`: the tests drive the service through its private helpers.
+- Coverage floor is 80%: tests for the whole-file downloader, Geo2Grid and the netCDF Rad/IR paths were dropped with that code in 1.2.0, and the Range-read downloader has no replacement suite yet.

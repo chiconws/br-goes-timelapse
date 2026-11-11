@@ -192,6 +192,8 @@ combine-as-imports = true
 split-on-trailing-comma = false
 
 [tool.ruff.lint.per-file-ignores]
+# Tests drive the service through its private helpers.
+"tests/**" = ["SLF001"]
 # Standalone build script, not a package.
 "scripts/**" = ["INP001"]
 
@@ -213,7 +215,7 @@ source = ["goes_timelapse"]
 
 [tool.coverage.report]
 # ratchet upwards only
-fail_under = 0
+fail_under = 80
 show_missing = true
 skip_empty = true
 
