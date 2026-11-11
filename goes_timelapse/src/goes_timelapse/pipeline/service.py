@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
+from pathlib import Path
 import shutil
 import sqlite3
-from datetime import UTC, datetime
 from time import perf_counter
-from pathlib import Path
+
 from typing_extensions import TypedDict
 
 from goes_timelapse.core.config import Settings
@@ -42,11 +43,11 @@ from goes_timelapse.pipeline.rendering import (
     write_lovelace_snippet,
 )
 from goes_timelapse.pipeline.runtime_types import (
-    ActiveDownloadEntry,
     RAW_SOURCE_INFRARED,
     RAW_SOURCE_LABELS,
     RAW_SOURCE_LIGHTNING,
     RAW_SOURCE_VISIBLE,
+    ActiveDownloadEntry,
     DownloadSourcePlan,
     RawFileEntry,
     SourceDownloadStatus,
@@ -66,7 +67,6 @@ from goes_timelapse.pipeline.timeline_runtime import (
     build_global_target_timestamps,
 )
 from goes_timelapse.timeline import AreaTimelinePlan
-
 
 LOGGER = get_logger(__name__)
 
@@ -94,6 +94,7 @@ class DownloadSourceSnapshot(TypedDict):
 
 class DownloadsSnapshot(TypedDict):
     sources: list[DownloadSourceSnapshot]
+
 
 class GoesTimelapseService:
     def __init__(
@@ -182,7 +183,9 @@ class GoesTimelapseService:
         LOGGER.trace("Startup storage checks: %s", storage_checks)
         blocking_storage_message = self._blocking_storage_message(storage_checks)
         if blocking_storage_message is not None:
-            LOGGER.error("Storage guard active at startup: %s", blocking_storage_message)
+            LOGGER.error(
+                "Storage guard active at startup: %s", blocking_storage_message
+            )
         else:
             storage_warning = self._storage_warning_summary(storage_checks)
             if storage_warning is not None:
@@ -197,8 +200,12 @@ class GoesTimelapseService:
             await self.enqueue(area_id)
         if self._start_background_tasks:
             LOGGER.info("Starting background tasks: poller and worker")
-            self._tasks.append(asyncio.create_task(self._poll_loop(), name="goes-poller"))
-            self._tasks.append(asyncio.create_task(self._worker_loop(), name="goes-worker"))
+            self._tasks.append(
+                asyncio.create_task(self._poll_loop(), name="goes-poller")
+            )
+            self._tasks.append(
+                asyncio.create_task(self._worker_loop(), name="goes-worker")
+            )
 
     async def stop(self) -> None:
         if self._immediate_refresh_task is not None:
@@ -335,7 +342,9 @@ class GoesTimelapseService:
             "raw_timestamp_count": self._raw_timestamp_count(),
             "raw_history_limit": self.settings.raw_history,
             "raw_frame_latest": files[0]["label"] if files else None,
-            "raw_download_summary": " | ".join(summaries) if summaries else "Nenhuma fonte ativa",
+            "raw_download_summary": " | ".join(summaries)
+            if summaries
+            else "Nenhuma fonte ativa",
             "raw_disk_usage_bytes": raw_disk_bytes,
             "disk_free_bytes": cache_check.free_bytes,
             "disk_total_bytes": cache_check.total_bytes,
@@ -348,7 +357,11 @@ class GoesTimelapseService:
 
     def downloads_snapshot(self) -> DownloadsSnapshot:
         sources: list[DownloadSourceSnapshot] = []
-        for source_key in (RAW_SOURCE_VISIBLE, RAW_SOURCE_INFRARED, RAW_SOURCE_LIGHTNING):
+        for source_key in (
+            RAW_SOURCE_VISIBLE,
+            RAW_SOURCE_INFRARED,
+            RAW_SOURCE_LIGHTNING,
+        ):
             status = self._download_status[source_key]
             files = self._raw_files_for_source(source_key)
             sources.append(
@@ -434,7 +447,9 @@ class GoesTimelapseService:
                         assert report is not None
                     except Exception as err:
                         LOGGER.exception("Raw refresh failed for %s", plan.source_key)
-                        error_messages.append(f"{RAW_SOURCE_LABELS[plan.source_key]}: {err}")
+                        error_messages.append(
+                            f"{RAW_SOURCE_LABELS[plan.source_key]}: {err}"
+                        )
                         if self._raw_files_for_source(plan.source_key):
                             self._mark_source_partial_due_to_error(plan.source_key)
                         else:
@@ -467,7 +482,10 @@ class GoesTimelapseService:
                         report.listing_seconds,
                         report.elapsed_seconds,
                         self._bytes_since_start[plan.source_key],
-                        self._bytes_since_start[plan.source_key] / 1e9 / uptime_hours * 24,
+                        self._bytes_since_start[plan.source_key]
+                        / 1e9
+                        / uptime_hours
+                        * 24,
                     )
                     total_downloads += report.downloaded_count
                     if report.failed_count and not report.kept_files:
@@ -507,7 +525,9 @@ class GoesTimelapseService:
     async def _refresh_source(self, plan: DownloadSourcePlan) -> DownloadReport:
         downloader = self._downloaders[plan.source_key]
         if isinstance(downloader, GlmDownloader):
-            return await downloader.refresh_latest(target_timestamps=plan.target_timestamps)
+            return await downloader.refresh_latest(
+                target_timestamps=plan.target_timestamps
+            )
         return await downloader.refresh_latest(
             target_timestamps=plan.target_timestamps,
             areas=self._area_crops(plan.source_key),
@@ -517,7 +537,9 @@ class GoesTimelapseService:
         return tuple(
             AreaCrop(
                 area_id=area.area_id,
-                bounds=self.renderer.destination_bounds(self.geometry_store.load_geometry(area)),
+                bounds=self.renderer.destination_bounds(
+                    self.geometry_store.load_geometry(area)
+                ),
                 target_timestamps=tuple(
                     frame.slot_timestamp
                     for frame in self._build_area_timeline_plan(area).frames
@@ -546,7 +568,10 @@ class GoesTimelapseService:
             return False
 
     def _schedule_immediate_refresh(self) -> None:
-        if self._immediate_refresh_task is not None and not self._immediate_refresh_task.done():
+        if (
+            self._immediate_refresh_task is not None
+            and not self._immediate_refresh_task.done()
+        ):
             return
         self._immediate_refresh_task = asyncio.create_task(
             self._run_immediate_refresh(),
@@ -637,7 +662,9 @@ class GoesTimelapseService:
                 area_id,
                 len(png_paths),
                 latest_source_timestamp,
-                (datetime.now(UTC) - latest_moment).total_seconds() if latest_moment else -1,
+                (datetime.now(UTC) - latest_moment).total_seconds()
+                if latest_moment
+                else -1,
             )
 
             if not self.state_store.is_tracked(area_id):
@@ -667,7 +694,9 @@ class GoesTimelapseService:
     def _cleanup_area_files(self, area_id: str) -> None:
         self.renderer.cleanup(area_id)
         for source_key in (RAW_SOURCE_VISIBLE, RAW_SOURCE_INFRARED):
-            shutil.rmtree(self.settings.raw_dir / source_key / area_id, ignore_errors=True)
+            shutil.rmtree(
+                self.settings.raw_dir / source_key / area_id, ignore_errors=True
+            )
         self.media_path(area_id).unlink(missing_ok=True)
         (self.settings.media_dir / f"{area_id}.gif").unlink(missing_ok=True)
         (self.settings.snippets_dir / f"{area_id}.yaml").unlink(missing_ok=True)
@@ -682,7 +711,9 @@ class GoesTimelapseService:
 
     _process_municipality = _process_area
 
-    def _update_raw_download_status(self, source_key: str, payload: dict[str, object]) -> None:
+    def _update_raw_download_status(
+        self, source_key: str, payload: dict[str, object]
+    ) -> None:
         status = self._download_status[source_key]
         status["phase"] = str(payload.get("phase", "idle"))
         status["attempted_count"] = _coerce_int(payload.get("attempted_count"))
@@ -707,7 +738,9 @@ class GoesTimelapseService:
                         else None
                     ),
                     "percent": (
-                        float(item["percent"]) if item.get("percent") is not None else None
+                        float(item["percent"])
+                        if item.get("percent") is not None
+                        else None
                     ),
                     "stage": str(item.get("stage", "")),
                 }
@@ -721,7 +754,9 @@ class GoesTimelapseService:
         if last_downloaded:
             status["last_downloaded"] = str(last_downloaded)
 
-    def _finalize_download_status(self, source_key: str, report: DownloadReport) -> None:
+    def _finalize_download_status(
+        self, source_key: str, report: DownloadReport
+    ) -> None:
         status = self._download_status[source_key]
         if report.failed_count and report.kept_files:
             phase = "partial"
@@ -740,7 +775,8 @@ class GoesTimelapseService:
                 "failed_count": report.failed_count,
                 "active_count": 0,
                 "current_file": None,
-                "last_downloaded": report.last_downloaded or status.get("last_downloaded"),
+                "last_downloaded": report.last_downloaded
+                or status.get("last_downloaded"),
                 "latest_available": report.latest_available,
                 "active_downloads": [],
             }
@@ -837,7 +873,9 @@ class GoesTimelapseService:
                 )
             ]
 
-        target_timestamps_by_source = self._build_global_target_timestamps(tracked_areas)
+        target_timestamps_by_source = self._build_global_target_timestamps(
+            tracked_areas
+        )
         LOGGER.trace(
             "Download planning target timestamps by source: %s",
             target_timestamps_by_source,
@@ -921,7 +959,9 @@ class GoesTimelapseService:
     def _build_frame_specs(self, area: AreaCatalogEntry) -> list[FrameSpec]:
         return build_frame_specs_from_timeline(
             area=area,
-            build_area_timeline=lambda area_obj: self._build_area_timeline_plan(area_obj),
+            build_area_timeline=lambda area_obj: self._build_area_timeline_plan(
+                area_obj
+            ),
             source_paths=self._available_raw_paths_by_source(area.area_id),
             lightning_points_by_timestamp=self._available_lightning_points_by_timestamp(),
         )
@@ -975,7 +1015,9 @@ class GoesTimelapseService:
     def _raw_files_for_source(self, source_key: str) -> list[RawFileEntry]:
         return raw_files_for_source(self.settings, source_key)
 
-    def _available_raw_paths_by_source(self, area_id: str) -> dict[str, dict[str, Path]]:
+    def _available_raw_paths_by_source(
+        self, area_id: str
+    ) -> dict[str, dict[str, Path]]:
         return available_raw_paths_by_source(self.settings, area_id, self._is_valid_raw)
 
     def _available_lightning_points_by_timestamp(

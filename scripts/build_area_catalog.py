@@ -3,19 +3,16 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
-import re
-import unicodedata
-import urllib.request
 from pathlib import Path
+import re
 from typing import cast
+import unicodedata
 from urllib.parse import urlparse
+import urllib.request
 
 import pandas as pd
 
-
-DEFAULT_POPULATION_SOURCE = (
-    "https://ftp.ibge.gov.br/Estimativas_de_Populacao/Estimativas_2025/POP2025_20260113.ods"
-)
+DEFAULT_POPULATION_SOURCE = "https://ftp.ibge.gov.br/Estimativas_de_Populacao/Estimativas_2025/POP2025_20260113.ods"
 DEFAULT_LOCALIDADES_BASE_URL = "https://servicodados.ibge.gov.br/api/v1/localidades"
 SUPPORTED_AREA_TYPES = frozenset({"municipio"})
 
@@ -91,7 +88,9 @@ def _build_area_rows(
     rows: list[dict[str, object]] = []
     for municipality in payloads["municipios"]:
         immediate_region = cast(dict[str, object], municipality["regiao-imediata"])
-        intermediate_region = cast(dict[str, object], immediate_region["regiao-intermediaria"])
+        intermediate_region = cast(
+            dict[str, object], immediate_region["regiao-intermediaria"]
+        )
         state = cast(dict[str, object], intermediate_region["UF"])
         ibge_code = str(municipality["id"])
         rows.append(

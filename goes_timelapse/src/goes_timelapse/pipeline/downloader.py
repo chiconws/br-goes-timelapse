@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import json
+from pathlib import Path
 import re
 import socket
-from pathlib import Path
 from time import perf_counter
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 from urllib.parse import quote
 import xml.etree.ElementTree as ET
 
@@ -31,7 +32,6 @@ from goes_timelapse.pipeline.partial_read import (
     write_abi_crop,
 )
 
-
 LOGGER = get_logger(__name__)
 NODD_PRODUCT_PREFIX = "ABI-L1b-RadF"
 NODD_LISTING_PREFIX_TEMPLATE = (
@@ -48,8 +48,12 @@ REQUEST_HEADERS = {
     "Accept-Encoding": "identity",
     "User-Agent": "br-goes-timelapse/1.2.0",
 }
-LISTING_TIMEOUT = aiohttp.ClientTimeout(total=45, connect=15, sock_connect=15, sock_read=20)
-DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=None, connect=30, sock_connect=30, sock_read=900)
+LISTING_TIMEOUT = aiohttp.ClientTimeout(
+    total=45, connect=15, sock_connect=15, sock_read=20
+)
+DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(
+    total=None, connect=30, sock_connect=30, sock_read=900
+)
 
 
 class TransientHttpError(aiohttp.ClientError):
@@ -150,8 +154,12 @@ class GoesDownloader:
         areas: tuple[AreaCrop, ...] = (),
     ) -> DownloadReport:
         started_at = perf_counter()
-        connector = aiohttp.TCPConnector(limit=DOWNLOAD_CONCURRENCY, family=socket.AF_INET)
-        slots_on_disk = {area.area_id: self._slots_on_disk(area.area_id) for area in areas}
+        connector = aiohttp.TCPConnector(
+            limit=DOWNLOAD_CONCURRENCY, family=socket.AF_INET
+        )
+        slots_on_disk = {
+            area.area_id: self._slots_on_disk(area.area_id) for area in areas
+        }
         missing_slots = tuple(
             {
                 slot
@@ -182,7 +190,9 @@ class GoesDownloader:
             source_filenames,
             target_timestamps=target_timestamps,
         )
-        candidate_outputs = [self.output_filename(filename) for filename in candidate_sources]
+        candidate_outputs = [
+            self.output_filename(filename) for filename in candidate_sources
+        ]
         latest_available = self._latest_available_output(
             source_filenames,
             target_timestamps=target_timestamps,
@@ -198,7 +208,11 @@ class GoesDownloader:
             (source_filename, area)
             for source_filename in candidate_sources
             for area in areas
-            if (slot := _slot_timestamp_for_output_filename(self.output_filename(source_filename)))
+            if (
+                slot := _slot_timestamp_for_output_filename(
+                    self.output_filename(source_filename)
+                )
+            )
             in area.target_timestamps
             and slot not in slots_on_disk[area.area_id]
         ]
@@ -387,7 +401,8 @@ class GoesDownloader:
         selected = [
             filename
             for filename in source_filenames
-            if _slot_timestamp_for_output_filename(self.output_filename(filename)) in target_set
+            if _slot_timestamp_for_output_filename(self.output_filename(filename))
+            in target_set
         ]
         LOGGER.trace(
             "Selected imagery candidates for %s with targets=%s: %s",
@@ -404,7 +419,9 @@ class GoesDownloader:
         target_timestamps: tuple[str, ...] | None,
     ) -> str | None:
         if target_timestamps is None:
-            return self.output_filename(source_filenames[0]) if source_filenames else None
+            return (
+                self.output_filename(source_filenames[0]) if source_filenames else None
+            )
         target_set = set(target_timestamps)
         for filename in source_filenames:
             output_filename = self.output_filename(filename)
@@ -526,7 +543,9 @@ class GlmDownloader:
                 latest_slot_output,
             )
             self._emit_progress(
-                phase="downloading" if download_missing and candidate_sources else "idle",
+                phase="downloading"
+                if download_missing and candidate_sources
+                else "idle",
                 attempted_count=len(candidate_sources),
                 completed_count=0,
                 failed_count=0,
@@ -548,7 +567,9 @@ class GlmDownloader:
                     failed_files=[],
                 )
 
-            if candidate_sources and not await self._layout_verified(session, candidate_sources[0]):
+            if candidate_sources and not await self._layout_verified(
+                session, candidate_sources[0]
+            ):
                 return DownloadReport(
                     kept_files=self._kept_raws_on_disk(),
                     downloaded_count=0,
@@ -565,7 +586,9 @@ class GlmDownloader:
             last_downloaded: str | None = None
             active_downloads: dict[str, dict[str, object]] = {}
             progress_lock = asyncio.Lock()
-            ready_for_conversion: dict[int, tuple[str, str, list[dict[str, float]] | None]] = {}
+            ready_for_conversion: dict[
+                int, tuple[str, str, list[dict[str, float]] | None]
+            ] = {}
             ready_for_conversion_event = asyncio.Event()
 
             def current_phase() -> str:
@@ -704,7 +727,9 @@ class GlmDownloader:
                 if flashes is None:
                     continue
 
-                await upsert_active_download(filename=source_filename, stage="converting")
+                await upsert_active_download(
+                    filename=source_filename, stage="converting"
+                )
                 try:
                     processed = self._merge_flashes_into_slot(source_filename, flashes)
                     downloaded_count += processed
@@ -751,7 +776,9 @@ class GlmDownloader:
             LOGGER.warning("GLM layout check inconclusive for %s: %s", filename, err)
             return False
         if direct != reference:
-            LOGGER.error("GLM layout changed, stopping GLM reads: mismatch in %s", filename)
+            LOGGER.error(
+                "GLM layout changed, stopping GLM reads: mismatch in %s", filename
+            )
             return False
         self._layout_checked_at = perf_counter()
         return True
@@ -762,10 +789,14 @@ class GlmDownloader:
         source_key: str,
     ) -> list[dict[str, float]]:
         latitude_chunks = parse_glm_node(
-            await self._get_range(session, source_key, GLM_LAT_NODE, GLM_LAT_NODE + GLM_NODE_SIZE)
+            await self._get_range(
+                session, source_key, GLM_LAT_NODE, GLM_LAT_NODE + GLM_NODE_SIZE
+            )
         )
         longitude_chunks = parse_glm_node(
-            await self._get_range(session, source_key, GLM_LON_NODE, GLM_LON_NODE + GLM_NODE_SIZE)
+            await self._get_range(
+                session, source_key, GLM_LON_NODE, GLM_LON_NODE + GLM_NODE_SIZE
+            )
         )
         ranges = {
             (start, end): await self._get_range(session, source_key, start, end)
@@ -796,7 +827,9 @@ class GlmDownloader:
                         raise ValueError(f"Range ignorado: HTTP {response.status}")
                     data = await response.read()
                 if len(data) != end - start:
-                    raise ValueError(f"Leitura curta: {len(data)} de {end - start} bytes")
+                    raise ValueError(
+                        f"Leitura curta: {len(data)} de {end - start} bytes"
+                    )
                 self._bytes_read += len(data)
                 self._requests += 1
                 return data
@@ -824,7 +857,9 @@ class GlmDownloader:
                         _raise_for_response(response)
                         payload = await response.text()
                     parsed = self.parse_listing(payload)
-                    LOGGER.trace("Fetched GLM listing prefix with %s file(s)", len(parsed))
+                    LOGGER.trace(
+                        "Fetched GLM listing prefix with %s file(s)", len(parsed)
+                    )
                     collected.update(parsed)
                     break
                 except DOWNLOAD_RETRYABLE_ERRORS as err:
@@ -851,7 +886,9 @@ class GlmDownloader:
             raise last_error
         return []
 
-    def _merge_flashes_into_slot(self, filename: str, flashes: list[dict[str, float]]) -> int:
+    def _merge_flashes_into_slot(
+        self, filename: str, flashes: list[dict[str, float]]
+    ) -> int:
         output_filename = self.output_filename(filename)
         destination = self._raw_dir / output_filename
         record = self._load_slot_record(destination)
@@ -885,8 +922,12 @@ class GlmDownloader:
             }
         payload = json.loads(path.read_text(encoding="utf-8"))
         return {
-            "slot_timestamp": str(payload.get("slot_timestamp") or parse_goes_slot_prefix(path.name)),
-            "source_filenames": [str(name) for name in (payload.get("source_filenames") or [])],
+            "slot_timestamp": str(
+                payload.get("slot_timestamp") or parse_goes_slot_prefix(path.name)
+            ),
+            "source_filenames": [
+                str(name) for name in (payload.get("source_filenames") or [])
+            ],
             "flashes": [
                 {"lat": float(item["lat"]), "lon": float(item["lon"])}
                 for item in (payload.get("flashes") or [])
@@ -934,11 +975,16 @@ class GlmDownloader:
                     break
                 selected_slots.append(slot_timestamp)
                 selected_slot_set.add(slot_timestamp)
-            elif target_timestamps is not None and slot_timestamp not in selected_slot_set:
+            elif (
+                target_timestamps is not None
+                and slot_timestamp not in selected_slot_set
+            ):
                 continue
             processed = processed_by_slot.get(slot_timestamp)
             if processed is None:
-                record = self._load_slot_record(self._raw_dir / f"{slot_timestamp}_glm.json")
+                record = self._load_slot_record(
+                    self._raw_dir / f"{slot_timestamp}_glm.json"
+                )
                 processed = set(str(name) for name in record["source_filenames"])
                 processed_by_slot[slot_timestamp] = processed
             if filename in processed:

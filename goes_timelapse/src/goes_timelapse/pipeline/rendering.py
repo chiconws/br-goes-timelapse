@@ -1,28 +1,25 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 import math
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import re
 from time import perf_counter
 from zoneinfo import ZoneInfo
-from typing import Sequence
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
-from rasterio.warp import transform as transform_points
-from rasterio.warp import transform_bounds
-from rasterio.windows import bounds as window_bounds
-from rasterio.windows import Window
+from rasterio.warp import transform as transform_points, transform_bounds
+from rasterio.windows import Window, bounds as window_bounds
 
 from goes_timelapse.core.config import Settings
 from goes_timelapse.core.logging_utils import get_logger
 from goes_timelapse.core.models import AreaCatalogEntry, AreaGeometry, BoundaryLine
 from goes_timelapse.data.catalog import load_boundary_lines
 from goes_timelapse.pipeline.raster_sources import WGS84_CRS, open_raster_source
-
 
 BRAZIL_TZ = ZoneInfo("America/Sao_Paulo")
 LEGACY_TIMESTAMP_PATTERN = re.compile(r"^(\d{11})_")
@@ -96,7 +93,9 @@ class AreaRenderer:
         *,
         marker_coordinates: tuple[float, float] | None = None,
     ) -> list[Path]:
-        frame_specs = self._coerce_frame_specs(frame_inputs)[-self._settings.frame_count :]
+        frame_specs = self._coerce_frame_specs(frame_inputs)[
+            -self._settings.frame_count :
+        ]
         if not frame_specs:
             return []
         LOGGER.trace(
@@ -110,7 +109,9 @@ class AreaRenderer:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         with _open_source(frame_specs[0].primary_path) as src:
-            plan = self._build_render_plan(geometry, src, marker_coordinates=marker_coordinates)
+            plan = self._build_render_plan(
+                geometry, src, marker_coordinates=marker_coordinates
+            )
 
         started_at = perf_counter()
         rendered_count = 0
@@ -151,7 +152,9 @@ class AreaRenderer:
         payload = {
             "timestamp": frame_spec.timestamp,
             "primary": frame_spec.primary_path.name,
-            "blend": frame_spec.blend_path.name if frame_spec.blend_path is not None else None,
+            "blend": frame_spec.blend_path.name
+            if frame_spec.blend_path is not None
+            else None,
             "blend_alpha": round(frame_spec.blend_alpha, 4),
             "dst_bounds": [round(value, 6) for value in plan.dst_bounds],
             "output_size": list(plan.output_size),
@@ -236,7 +239,9 @@ class AreaRenderer:
         dst_bounds: tuple[float, float, float, float],
         src,
     ) -> tuple[float, float, float, float]:
-        source_left, source_bottom, source_right, source_top = self._source_bounds_in_wgs84(src)
+        source_left, source_bottom, source_right, source_top = (
+            self._source_bounds_in_wgs84(src)
+        )
         left, bottom, right, top = dst_bounds
         width = right - left
         height = top - bottom
@@ -284,7 +289,9 @@ class AreaRenderer:
         image = self._load_frame_image(frame_spec.primary_path, area.area_id, plan)
         blend_image: Image.Image | None = None
         if frame_spec.blend_path is not None:
-            blend_image = self._load_frame_image(frame_spec.blend_path, area.area_id, plan)
+            blend_image = self._load_frame_image(
+                frame_spec.blend_path, area.area_id, plan
+            )
             image = Image.blend(image, blend_image, frame_spec.blend_alpha)
             blend_image.close()
 
@@ -297,7 +304,9 @@ class AreaRenderer:
             (round(point[0], 1), round(point[1], 1)) for point in plan.scaled_polygon
         ]
         if polygon_points:
-            draw.line(polygon_points + [polygon_points[0]], fill=(255, 214, 10, 255), width=2)
+            draw.line(
+                polygon_points + [polygon_points[0]], fill=(255, 214, 10, 255), width=2
+            )
 
         lightning_points = self._scale_points_to_output(
             frame_spec.lightning_points,
@@ -407,7 +416,9 @@ class AreaRenderer:
         line_gap = 6
         padding_x = 14
         padding_y = 10
-        text_height = sum(box[3] - box[1] for box in boxes) + line_gap * (len(lines) - 1)
+        text_height = sum(box[3] - box[1] for box in boxes) + line_gap * (
+            len(lines) - 1
+        )
         background_box = (
             20,
             20,
@@ -425,7 +436,9 @@ class AreaRenderer:
             )
             y_position += box[3] - box[1] + line_gap
 
-    def _load_font(self, font_size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    def _load_font(
+        self, font_size: int
+    ) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
         cached = self._font_cache.get(font_size)
         if cached is not None:
             return cached
@@ -462,7 +475,9 @@ class AreaRenderer:
             scaled_lines.append(tuple(scaled_line))
         return scaled_lines
 
-    def _project_polygon_to_source(self, polygon: tuple[tuple[float, float], ...], src) -> list[tuple[float, float]]:
+    def _project_polygon_to_source(
+        self, polygon: tuple[tuple[float, float], ...], src
+    ) -> list[tuple[float, float]]:
         return self._project_points_to_source(polygon, src)
 
     def _project_points_to_source(
@@ -481,9 +496,13 @@ class AreaRenderer:
         transformed = transform_points(WGS84_CRS, src.crs, lon_values, lat_values)
         x_values = transformed[0]
         y_values = transformed[1]
-        return [inverse_transform * (x, y) for x, y in zip(x_values, y_values, strict=True)]
+        return [
+            inverse_transform * (x, y) for x, y in zip(x_values, y_values, strict=True)
+        ]
 
-    def destination_bounds(self, geometry: AreaGeometry) -> tuple[float, float, float, float]:
+    def destination_bounds(
+        self, geometry: AreaGeometry
+    ) -> tuple[float, float, float, float]:
         min_lon, min_lat, max_lon, max_lat = geometry.bounds
         centroid_lon, centroid_lat = geometry.centroid
         base_span = max(max_lon - min_lon, max_lat - min_lat)
@@ -639,7 +658,9 @@ class AreaRenderer:
         return (marker_x, marker_y)
 
     @staticmethod
-    def _coerce_frame_specs(frame_inputs: Sequence[Path | FrameSpec]) -> list[FrameSpec]:
+    def _coerce_frame_specs(
+        frame_inputs: Sequence[Path | FrameSpec],
+    ) -> list[FrameSpec]:
         frame_specs: list[FrameSpec] = []
         for item in frame_inputs:
             if isinstance(item, FrameSpec):
@@ -726,6 +747,7 @@ def write_lovelace_snippet(
 
 
 MunicipalityRenderer = AreaRenderer
+
 
 class _open_source:
     def __init__(self, path: Path):

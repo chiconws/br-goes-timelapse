@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import gzip
 import json
+from pathlib import Path
 import re
 import unicodedata
-from pathlib import Path
 
 from goes_timelapse.core.models import AreaCatalogEntry, BoundaryLine
-
 
 SUPPORTED_AREA_TYPES = frozenset({"municipio"})
 
@@ -57,7 +56,9 @@ def _coerce_float(value: object) -> float:
 
 class AreaCatalog:
     def __init__(self, areas: list[AreaCatalogEntry]):
-        filtered_areas = [area for area in areas if area.area_type in SUPPORTED_AREA_TYPES]
+        filtered_areas = [
+            area for area in areas if area.area_type in SUPPORTED_AREA_TYPES
+        ]
         self._areas = sorted(
             filtered_areas,
             key=lambda area: (
@@ -70,7 +71,7 @@ class AreaCatalog:
         self._by_id = {area.area_id: area for area in filtered_areas}
 
     @classmethod
-    def from_path(cls, path: Path) -> "AreaCatalog":
+    def from_path(cls, path: Path) -> AreaCatalog:
         with gzip.open(path, "rt", encoding="utf-8") as handle:
             raw_data = json.load(handle)
         areas = [
@@ -80,11 +81,17 @@ class AreaCatalog:
                 area_code=str(item["area_code"]),
                 name=str(item["name"]),
                 search_text=str(item["search_text"]),
-                population=int(item["population"]) if item.get("population") is not None else None,
+                population=int(item["population"])
+                if item.get("population") is not None
+                else None,
                 state_code=str(item["state_code"]) if item.get("state_code") else None,
                 state_name=str(item["state_name"]) if item.get("state_name") else None,
-                parent_code=str(item["parent_code"]) if item.get("parent_code") else None,
-                parent_name=str(item["parent_name"]) if item.get("parent_name") else None,
+                parent_code=str(item["parent_code"])
+                if item.get("parent_code")
+                else None,
+                parent_name=str(item["parent_name"])
+                if item.get("parent_name")
+                else None,
             )
             for item in raw_data
         ]
@@ -133,7 +140,9 @@ class AreaCatalog:
         if code.startswith(cleaned_query):
             return (1, 0, len(code) - len(cleaned_query), 0)
 
-        exact_name_score = self._score_exact_match(normalized_name, normalized_display_name, cleaned_query)
+        exact_name_score = self._score_exact_match(
+            normalized_name, normalized_display_name, cleaned_query
+        )
         if exact_name_score is not None:
             return exact_name_score
 

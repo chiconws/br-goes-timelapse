@@ -1,14 +1,14 @@
 from __future__ import annotations
+
+from dataclasses import dataclass
 import os
+from pathlib import Path
 import shutil
 import subprocess
-from dataclasses import dataclass
-from pathlib import Path
 
 from rasterio import Affine
 
 from goes_timelapse.core.logging_utils import resolve_log_level
-
 
 REMOTE_FILESYSTEM_TYPES = {
     "nfs",
@@ -79,7 +79,7 @@ class Settings:
     transform: Affine
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls) -> Settings:
         package_dir = Path(__file__).resolve().parent.parent
         data_dir = _env_path("GOES_DATA_DIR", "/data/goes_timelapse")
         state_dir = _env_path("GOES_STATE_DIR", "/config/goes_timelapse/state")
@@ -122,9 +122,7 @@ class Settings:
         return cls(
             host=os.getenv("GOES_HOST", "0.0.0.0"),
             port=_env_int("GOES_PORT", 8099),
-            goes_url=os.getenv(
-                "GOES_URL", "https://noaa-goes19.s3.amazonaws.com/"
-            ),
+            goes_url=os.getenv("GOES_URL", "https://noaa-goes19.s3.amazonaws.com/"),
             poll_minutes=_env_int("GOES_POLL_MINUTES", 2),
             frame_count=_env_int("GOES_FRAME_COUNT", 10),
             gif_fps=_env_int("GOES_GIF_FPS", 2),

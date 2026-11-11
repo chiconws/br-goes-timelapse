@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from goes_timelapse.pipeline.runtime_types import SourceDownloadStatus
 
+
 def build_source_download_summary(
     status: SourceDownloadStatus,
     *,
@@ -27,7 +28,9 @@ def build_source_download_summary(
     if phase == "partial":
         if reason:
             return f"{raw_frame_count} arquivo(s) em disco; {reason.lower()}"
-        return f"{raw_frame_count} arquivo(s) em disco; {failed} falha(s) no último ciclo"
+        return (
+            f"{raw_frame_count} arquivo(s) em disco; {failed} falha(s) no último ciclo"
+        )
     if phase == "ready":
         return f"{raw_frame_count} arquivo(s) brutos em disco"
     if phase == "error":

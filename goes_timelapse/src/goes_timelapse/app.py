@@ -1,12 +1,13 @@
 from __future__ import annotations
-import mimetypes
+
 from contextlib import asynccontextmanager
+import mimetypes
 from pathlib import Path
 
-import uvicorn
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from pydantic import BaseModel
+import uvicorn
 
 from goes_timelapse.core.config import Settings
 from goes_timelapse.core.logging_utils import configure_logging
@@ -59,7 +60,10 @@ def create_app(
     async def ingress_only(request: Request, call_next):
         client_host = request.client.host if request.client else ""
         if client_host not in app_settings.allowed_client_hosts:
-            return JSONResponse(status_code=403, content={"detail": "Acesso permitido apenas via Ingress"})
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Acesso permitido apenas via Ingress"},
+            )
         return await call_next(request)
 
     @app.get("/")
@@ -67,7 +71,9 @@ def create_app(
         base_href = _base_href_for_request(request)
         rendered_index = (
             index_template.replace("__BASE_PATH__", base_href)
-            .replace("__STYLE_HREF__", f"{base_href}static/styles-{STATIC_ASSET_VERSION}.css")
+            .replace(
+                "__STYLE_HREF__", f"{base_href}static/styles-{STATIC_ASSET_VERSION}.css"
+            )
             .replace(
                 "__SCRIPT_CORE_SRC__",
                 f"{base_href}static/app-core.js?v={STATIC_ASSET_VERSION}",
@@ -80,7 +86,9 @@ def create_app(
                 "__SCRIPT_ACTIONS_SRC__",
                 f"{base_href}static/app-actions.js?v={STATIC_ASSET_VERSION}",
             )
-            .replace("__SCRIPT_SRC__", f"{base_href}static/app-{STATIC_ASSET_VERSION}.js")
+            .replace(
+                "__SCRIPT_SRC__", f"{base_href}static/app-{STATIC_ASSET_VERSION}.js"
+            )
         )
         return HTMLResponse(
             rendered_index,
@@ -108,8 +116,13 @@ def create_app(
     @app.get("/static/{asset_path:path}")
     async def static_asset(asset_path: str) -> FileResponse:
         resolved_path = (static_dir / asset_path).resolve()
-        if static_dir.resolve() not in resolved_path.parents or not resolved_path.is_file():
-            raise HTTPException(status_code=404, detail="Arquivo estático não encontrado")
+        if (
+            static_dir.resolve() not in resolved_path.parents
+            or not resolved_path.is_file()
+        ):
+            raise HTTPException(
+                status_code=404, detail="Arquivo estático não encontrado"
+            )
 
         media_type, _ = mimetypes.guess_type(resolved_path.name)
         return FileResponse(
@@ -136,7 +149,9 @@ def create_app(
         return [_area_payload(area) for area in service.search(q)]
 
     @app.get("/api/municipalities")
-    async def municipalities_alias(request: Request, q: str = "") -> list[dict[str, object]]:
+    async def municipalities_alias(
+        request: Request, q: str = ""
+    ) -> list[dict[str, object]]:
         service: GoesTimelapseService = request.app.state.service
         return [_area_payload(area) for area in service.search(q)]
 
@@ -145,7 +160,9 @@ def create_app(
         service: GoesTimelapseService = request.app.state.service
         items = []
         for area in service.tracked():
-            media_exists = bool(area.media_path) and service.media_path(area.area_id).exists()
+            media_exists = (
+                bool(area.media_path) and service.media_path(area.area_id).exists()
+            )
             media_path = service.media_path(area.area_id)
             media_version = media_path.stat().st_mtime_ns if media_exists else None
             items.append(
@@ -169,7 +186,9 @@ def create_app(
                         else None
                     ),
                     "preview_url": (
-                        f"api/media/{area.area_id}?m={media_version}" if media_exists else None
+                        f"api/media/{area.area_id}?m={media_version}"
+                        if media_exists
+                        else None
                     ),
                     "media_version": media_version,
                     "snippet_url": f"api/snippets/{area.area_id}",
@@ -183,7 +202,9 @@ def create_app(
         try:
             tracked_item = await service.add_tracked(area_id)
         except KeyError as err:
-            raise HTTPException(status_code=404, detail="Município não encontrado") from err
+            raise HTTPException(
+                status_code=404, detail="Município não encontrado"
+            ) from err
         except ValueError as err:
             raise HTTPException(status_code=409, detail=str(err)) from err
         return {
@@ -205,7 +226,9 @@ def create_app(
                 marker_lon=payload.lon,
             )
         except KeyError as err:
-            raise HTTPException(status_code=404, detail="Município acompanhado não encontrado") from err
+            raise HTTPException(
+                status_code=404, detail="Município acompanhado não encontrado"
+            ) from err
         except ValueError as err:
             raise HTTPException(status_code=422, detail=str(err)) from err
 
@@ -222,7 +245,9 @@ def create_app(
         try:
             tracked_item = await service.clear_marker(area_id)
         except KeyError as err:
-            raise HTTPException(status_code=404, detail="Município acompanhado não encontrado") from err
+            raise HTTPException(
+                status_code=404, detail="Município acompanhado não encontrado"
+            ) from err
 
         return {
             "area_id": tracked_item.area_id,
@@ -243,7 +268,9 @@ def create_app(
         try:
             text = service.snippet_text(area_id)
         except FileNotFoundError as err:
-            raise HTTPException(status_code=404, detail="Snippet não encontrado") from err
+            raise HTTPException(
+                status_code=404, detail="Snippet não encontrado"
+            ) from err
         return {"area_id": area_id, "snippet": text}
 
     @app.get("/api/media/{area_id}")
@@ -288,6 +315,7 @@ def _area_payload(area) -> dict[str, object]:
         "state_name": area.state_name,
         "parent_name": area.parent_name,
     }
+
 
 def _base_href_for_request(request: Request) -> str:
     ingress_path = request.headers.get("x-ingress-path", "").strip()

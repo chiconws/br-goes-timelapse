@@ -1,13 +1,12 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import logging
+from pathlib import Path
 import sqlite3
 import threading
-from datetime import UTC, datetime
-from pathlib import Path
 
 from goes_timelapse.core.models import AreaCatalogEntry, TrackedArea
-
 
 LOGGER = logging.getLogger(__name__)
 SQLITE_BUSY_TIMEOUT_MS = 30_000
@@ -92,12 +91,18 @@ class StateStore:
     def _ensure_tracked_area_columns(self) -> None:
         existing_columns = {
             str(row[1])
-            for row in self._connection.execute("PRAGMA table_info(tracked_areas)").fetchall()
+            for row in self._connection.execute(
+                "PRAGMA table_info(tracked_areas)"
+            ).fetchall()
         }
         if "marker_lat" not in existing_columns:
-            self._connection.execute("ALTER TABLE tracked_areas ADD COLUMN marker_lat REAL")
+            self._connection.execute(
+                "ALTER TABLE tracked_areas ADD COLUMN marker_lat REAL"
+            )
         if "marker_lon" not in existing_columns:
-            self._connection.execute("ALTER TABLE tracked_areas ADD COLUMN marker_lon REAL")
+            self._connection.execute(
+                "ALTER TABLE tracked_areas ADD COLUMN marker_lon REAL"
+            )
 
     def _maybe_migrate_municipality_table(self) -> None:
         cursor = self._connection.execute(
@@ -321,8 +326,12 @@ class StateStore:
             latest_source_timestamp=row["latest_source_timestamp"],
             media_path=row["media_path"],
             snippet_path=row["snippet_path"],
-            marker_lat=float(row["marker_lat"]) if row["marker_lat"] is not None else None,
-            marker_lon=float(row["marker_lon"]) if row["marker_lon"] is not None else None,
+            marker_lat=float(row["marker_lat"])
+            if row["marker_lat"] is not None
+            else None,
+            marker_lon=float(row["marker_lon"])
+            if row["marker_lon"] is not None
+            else None,
         )
 
     @staticmethod

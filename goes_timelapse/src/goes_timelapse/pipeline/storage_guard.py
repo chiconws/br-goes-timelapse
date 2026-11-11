@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
+import shutil
 
 from goes_timelapse.core.config import Settings
 from goes_timelapse.pipeline.runtime_types import (
@@ -60,8 +60,7 @@ def build_storage_check(
         )
     elif free_bytes < warning_free_bytes:
         warning = (
-            f"{label} em '{path}' com pouco espaço "
-            f"({format_bytes(free_bytes)} livres)"
+            f"{label} em '{path}' com pouco espaço ({format_bytes(free_bytes)} livres)"
         )
 
     return StorageCheck(
@@ -77,9 +76,7 @@ def build_storage_check(
 
 def worst_staging_check(storage_checks: dict[str, StorageCheck]) -> StorageCheck | None:
     staging_checks = [
-        storage_checks[key]
-        for key in ("source", "scratch")
-        if key in storage_checks
+        storage_checks[key] for key in ("source", "scratch") if key in storage_checks
     ]
     if not staging_checks:
         return None
