@@ -1,0 +1,74 @@
+[
+  {
+    "area_id": "municipio-3552403",
+    "area_type": "municipio",
+    "area_code": "3552403",
+    "name": "Sumare",
+    "search_text": "municipio 3552403 sumare sp sao paulo campinas",
+    "population": 286211,
+    "state_code": "SP",
+    "state_name": "Sao Paulo",
+    "parent_code": "3501608",
+    "parent_name": "Campinas"
+  },
+  {
+    "area_id": "municipio-3509502",
+    "area_type": "municipio",
+    "area_code": "3509502",
+    "name": "Campinas",
+    "search_text": "municipio 3509502 campinas sp sao paulo",
+    "population": 1182828,
+    "state_code": "SP",
+    "state_name": "Sao Paulo",
+    "parent_code": "3501608",
+    "parent_name": "Campinas"
+  },
+  {
+    "area_id": "municipio-3205309",
+    "area_type": "municipio",
+    "area_code": "3205309",
+    "name": "Vitoria",
+    "search_text": "municipio 3205309 vitoria es espirito santo",
+    "population": 322869,
+    "state_code": "ES",
+    "state_name": "Espirito Santo",
+    "parent_code": "320001",
+    "parent_name": "Vitoria"
+  },
+  {
+    "area_id": "municipio-3205002",
+    "area_type": "municipio",
+    "area_code": "3205002",
+    "name": "Serra",
+    "search_text": "municipio 3205002 serra es espirito santo vitoria",
+    "population": 579720,
+    "state_code": "ES",
+    "state_name": "Espirito Santo",
+    "parent_code": "320001",
+    "parent_name": "Vitoria"
+  },
+  {
+    "area_id": "municipio-3205200",
+    "area_type": "municipio",
+    "area_code": "3205200",
+    "name": "Vila Velha",
+    "search_text": "municipio 3205200 vila velha es espirito santo vitoria",
+    "population": 506779,
+    "state_code": "ES",
+    "state_name": "Espirito Santo",
+    "parent_code": "320001",
+    "parent_name": "Vitoria"
+  },
+  {
+    "area_id": "municipio-2933307",
+    "area_type": "municipio",
+    "area_code": "2933307",
+    "name": "Vitoria da Conquista",
+    "search_text": "municipio 2933307 vitoria da conquista ba bahia",
+    "population": 396613,
+    "state_code": "BA",
+    "state_name": "Bahia",
+    "parent_code": "29003",
+    "parent_name": "Vitoria da Conquista"
+  }
+]
