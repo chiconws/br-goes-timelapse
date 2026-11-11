@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import contextlib
 from datetime import UTC, datetime
 import logging
@@ -300,7 +301,7 @@ class StateStore:
             )
         )
 
-    def _run_write(self, operation) -> None:
+    def _run_write(self, operation: Callable[[], object]) -> None:
         with self._lock:
             for attempt in range(2):
                 try:

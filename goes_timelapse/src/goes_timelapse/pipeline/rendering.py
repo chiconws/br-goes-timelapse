@@ -11,9 +11,11 @@ import math
 from pathlib import Path
 import re
 from time import perf_counter
+from typing import cast
 from zoneinfo import ZoneInfo
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from rasterio.crs import CRS
 from rasterio.warp import transform as transform_points, transform_bounds
 from rasterio.windows import Window, bounds as window_bounds
 
@@ -21,7 +23,11 @@ from goes_timelapse.core.config import Settings
 from goes_timelapse.core.logging_utils import get_logger
 from goes_timelapse.core.models import AreaCatalogEntry, AreaGeometry, BoundaryLine
 from goes_timelapse.data.catalog import load_boundary_lines
-from goes_timelapse.pipeline.raster_sources import WGS84_CRS, open_raster_source
+from goes_timelapse.pipeline.raster_sources import (
+    WGS84_CRS,
+    RasterSource,
+    open_raster_source,
+)
 
 BRAZIL_TZ = ZoneInfo("America/Sao_Paulo")
 LEGACY_TIMESTAMP_PATTERN = re.compile(r"^(\d{11})_")
@@ -197,7 +203,7 @@ class AreaRenderer:
     def _build_render_plan(
         self,
         geometry: AreaGeometry,
-        src,
+        src: RasterSource,
         *,
         marker_coordinates: tuple[float, float] | None = None,
     ) -> RenderPlan:
@@ -250,7 +256,7 @@ class AreaRenderer:
     def _fit_destination_bounds_to_source(
         self,
         dst_bounds: tuple[float, float, float, float],
-        src,
+        src: RasterSource,
     ) -> tuple[float, float, float, float]:
         source_left, source_bottom, source_right, source_top = (
             self._source_bounds_in_wgs84(src)
@@ -439,7 +445,7 @@ class AreaRenderer:
             20 + text_height + padding_y * 2,
         )
         draw.rounded_rectangle(background_box, radius=12, fill=(0, 0, 0, 150))
-        y_position = background_box[1] + padding_y
+        y_position: float = background_box[1] + padding_y
         for line, box in zip(lines, boxes, strict=True):
             draw.text(
                 (background_box[0] + padding_x, y_position),
@@ -455,6 +461,7 @@ class AreaRenderer:
         cached = self._font_cache.get(font_size)
         if cached is not None:
             return cached
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont
         try:
             font = ImageFont.truetype(str(self._settings.font_path), font_size)
         except OSError:
@@ -489,14 +496,14 @@ class AreaRenderer:
         return scaled_lines
 
     def _project_polygon_to_source(
-        self, polygon: tuple[tuple[float, float], ...], src
+        self, polygon: tuple[tuple[float, float], ...], src: RasterSource
     ) -> list[tuple[float, float]]:
         return self._project_points_to_source(polygon, src)
 
     def _project_points_to_source(
         self,
         points: tuple[tuple[float, float], ...],
-        src,
+        src: RasterSource,
     ) -> list[tuple[float, float]]:
         if not points:
             return []
@@ -542,7 +549,7 @@ class AreaRenderer:
 
     def _build_source_window(
         self,
-        src,
+        src: RasterSource,
         dst_bounds: tuple[float, float, float, float],
     ) -> Window:
         if src.crs == WGS84_CRS:
@@ -570,7 +577,7 @@ class AreaRenderer:
     def _transform_bounds_to_source(
         self,
         bounds: tuple[float, float, float, float],
-        dst_crs,
+        dst_crs: CRS,
     ) -> tuple[float, float, float, float]:
         left, bottom, right, top = bounds
         samples = []
@@ -593,14 +600,19 @@ class AreaRenderer:
         y_values = transformed[1]
         return (min(x_values), min(y_values), max(x_values), max(y_values))
 
-    def _source_bounds_in_wgs84(self, src) -> tuple[float, float, float, float]:
+    def _source_bounds_in_wgs84(
+        self, src: RasterSource
+    ) -> tuple[float, float, float, float]:
         source_bounds = window_bounds(
             Window.from_slices((0, src.height), (0, src.width)),
             src.transform,
         )
         if src.crs == WGS84_CRS:
-            return source_bounds
-        return transform_bounds(src.crs, WGS84_CRS, *source_bounds, densify_pts=21)
+            return cast(tuple[float, float, float, float], source_bounds)
+        return cast(
+            tuple[float, float, float, float],
+            transform_bounds(src.crs, WGS84_CRS, *source_bounds, densify_pts=21),
+        )
 
     def _scale_polygon_to_output(
         self,
@@ -771,12 +783,12 @@ MunicipalityRenderer = AreaRenderer
 class _open_source:
     def __init__(self, path: Path):
         self._path = path
-        self._source = None
+        self._source: RasterSource | None = None
 
-    def __enter__(self):
+    def __enter__(self) -> RasterSource:
         self._source = open_raster_source(self._path)
         return self._source
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(self, *exc_info: object) -> None:
         if self._source is not None:
             self._source.close()
