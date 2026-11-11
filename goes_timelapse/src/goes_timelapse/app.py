@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 import mimetypes
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 import uvicorn
 
 from goes_timelapse.core.config import Settings
 from goes_timelapse.core.logging_utils import configure_logging
+from goes_timelapse.core.models import AreaCatalogEntry
 from goes_timelapse.core.state import StateStore
 from goes_timelapse.data.catalog import AreaCatalog
 from goes_timelapse.pipeline.service import DownloadsSnapshot, GoesTimelapseService
@@ -45,7 +47,7 @@ def create_app(  # noqa: C901 - FastAPI routes are closures over the service
     no_store_headers = {"Cache-Control": "no-store, no-cache, must-revalidate"}
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         service = GoesTimelapseService(
             settings=app_settings,
             catalog=AreaCatalog.from_path(app_settings.catalog_path),
@@ -62,7 +64,9 @@ def create_app(  # noqa: C901 - FastAPI routes are closures over the service
     app = FastAPI(title="Timelapses GOES de Municípios", lifespan=lifespan)
 
     @app.middleware("http")
-    async def ingress_only(request: Request, call_next):
+    async def ingress_only(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
         client_host = request.client.host if request.client else ""
         if client_host not in app_settings.allowed_client_hosts:
             return JSONResponse(
@@ -163,7 +167,7 @@ def create_app(  # noqa: C901 - FastAPI routes are closures over the service
     @app.get("/api/tracked")
     async def tracked(request: Request) -> list[dict[str, object]]:
         service: GoesTimelapseService = request.app.state.service
-        items = []
+        items: list[dict[str, object]] = []
         for area in service.tracked():
             media_exists = (
                 bool(area.media_path) and service.media_path(area.area_id).exists()
@@ -307,7 +311,7 @@ def main() -> None:
     )
 
 
-def _area_payload(area) -> dict[str, object]:
+def _area_payload(area: AreaCatalogEntry) -> dict[str, object]:
     return {
         "area_id": area.area_id,
         "area_type": area.area_type,

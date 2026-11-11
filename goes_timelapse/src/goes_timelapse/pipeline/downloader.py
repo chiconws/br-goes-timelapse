@@ -74,8 +74,10 @@ S3_XML_NAMESPACE = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
 class SessionLike(Protocol):
     """Minimal aiohttp session interface used by the downloaders."""
 
-    def get(self, url: Any, **kwargs: Any) -> Any:
+    @property
+    def get(self) -> Callable[..., Any]:
         """Start a GET request."""
+        ...
 
 
 class GlmSlotRecord(TypedDict):
@@ -849,7 +851,7 @@ class GlmDownloader:
                     _raise_for_response(response)
                     if response.status != 206:
                         raise ValueError(f"Range ignorado: HTTP {response.status}")
-                    data = await response.read()
+                    data: bytes = await response.read()
                 if len(data) != end - start:
                     raise ValueError(
                         f"Leitura curta: {len(data)} de {end - start} bytes"

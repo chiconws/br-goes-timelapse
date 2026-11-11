@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import sqlite3
 from time import perf_counter
+from typing import Any
 
 from typing_extensions import TypedDict
 
@@ -124,7 +125,7 @@ class GoesTimelapseService:
             base_url=settings.ibge_malhas_url,
             timeout_seconds=settings.ibge_request_timeout,
         )
-        self._downloaders = {
+        self._downloaders: dict[str, GoesDownloader | GlmDownloader] = {
             RAW_SOURCE_VISIBLE: GoesDownloader(
                 base_url=settings.goes_url,
                 raw_dir=settings.raw_dir / RAW_SOURCE_VISIBLE,
@@ -573,7 +574,7 @@ class GoesTimelapseService:
         self,
         area_id: str,
         status: str,
-        **kwargs,
+        **kwargs: Any,
     ) -> bool:
         try:
             self.state_store.set_status(area_id, status, **kwargs)

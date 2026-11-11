@@ -4,14 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 import numpy as np
+from numpy.typing import DTypeLike
 from PIL import Image
 import rasterio
 from rasterio import Affine
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
+from rasterio.io import DatasetReader
 from rasterio.transform import from_bounds
 from rasterio.vrt import WarpedVRT
 from rasterio.warp import reproject
@@ -27,18 +29,22 @@ class RasterSource(Protocol):
     @property
     def width(self) -> int:
         """Width in pixels."""
+        ...
 
     @property
     def height(self) -> int:
         """Height in pixels."""
+        ...
 
     @property
     def transform(self) -> Affine:
         """Affine transform of the grid."""
+        ...
 
     @property
     def crs(self) -> CRS:
         """Coordinate reference system of the grid."""
+        ...
 
     def read_image(
         self,
@@ -48,9 +54,11 @@ class RasterSource(Protocol):
         dst_bounds: tuple[float, float, float, float] | None = None,
     ) -> Image.Image:
         """Return the image reprojected to the destination bounds."""
+        ...
 
     def close(self) -> None:
         """Release the underlying file."""
+        ...
 
 
 @dataclass(slots=True)
@@ -69,7 +77,7 @@ class GeoTiffRasterSource:
             )
 
     @property
-    def dataset(self):
+    def dataset(self) -> DatasetReader:
         """Open rasterio dataset."""
         return self._vrt or self._dataset
 
@@ -258,8 +266,8 @@ class GeoTiffRasterSource:
         src_transform: Affine,
         dst_transform: Affine,
         dst_shape: tuple[int, int],
-        dtype,
-        fill_value,
+        dtype: DTypeLike,
+        fill_value: float,
         resampling: Resampling,
     ) -> np.ndarray:
         destination = np.full(dst_shape, fill_value, dtype=dtype)
@@ -431,7 +439,7 @@ def _normalize_to_uint8(subset: np.ndarray) -> np.ndarray:
     normalized[finite_mask] = np.clip(
         (subset[finite_mask] - low) / (high - low), 0.0, 1.0
     )
-    return np.round(normalized * 255).astype(np.uint8)
+    return cast(np.ndarray, np.round(normalized * 255).astype(np.uint8))
 
 
 def _normalize_visible_cmi_to_uint8(subset: np.ndarray) -> np.ndarray:
@@ -458,7 +466,9 @@ def _normalize_visible_cmi_to_uint8(subset: np.ndarray) -> np.ndarray:
     normalized = np.power(normalized, 0.92, dtype=np.float32)
     normalized = 0.06 + (normalized * 0.88)
     normalized[~finite_mask] = 0.0
-    return np.round(np.clip(normalized, 0.0, 1.0) * 255).astype(np.uint8)
+    return cast(
+        np.ndarray, np.round(np.clip(normalized, 0.0, 1.0) * 255).astype(np.uint8)
+    )
 
 
 def _normalize_infrared_cmi_to_uint8(subset: np.ndarray) -> np.ndarray:
@@ -483,4 +493,6 @@ def _normalize_infrared_cmi_to_uint8(subset: np.ndarray) -> np.ndarray:
     normalized = np.power(normalized, 0.85, dtype=np.float32)
     normalized = 0.04 + (normalized * 0.92)
     normalized[~finite_mask] = 0.0
-    return np.round(np.clip(normalized, 0.0, 1.0) * 255).astype(np.uint8)
+    return cast(
+        np.ndarray, np.round(np.clip(normalized, 0.0, 1.0) * 255).astype(np.uint8)
+    )

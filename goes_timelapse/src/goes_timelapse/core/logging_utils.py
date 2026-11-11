@@ -7,6 +7,8 @@ import logging
 import sys
 from typing import Any, Final, cast
 
+from typing_extensions import override
+
 TRACE_LEVEL: Final[int] = 5
 TRACE_LEVEL_NAME: Final[str] = "TRACE"
 RESET: Final[str] = "\x1b[0m"
@@ -31,6 +33,7 @@ LEVEL_NAMES: Final[dict[str, int]] = {
 class SeverityColorFormatter(logging.Formatter):
     """Formatter that colors the line prefix by severity."""
 
+    @override
     def format(self, record: logging.LogRecord) -> str:
         """Render a record with timestamp, level, logger name and traceback."""
         message = record.getMessage()
@@ -122,7 +125,7 @@ def configure_logging(level: int) -> None:
 
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(SeverityColorFormatter(datefmt="%Y-%m-%d %H:%M:%S"))
-    handler._goes_timelapse_handler = True  # noqa: SLF001 - marks our handler for reconfiguration
+    handler._goes_timelapse_handler = True  # type: ignore[attr-defined]  # noqa: SLF001 - marks our handler for reconfiguration
 
     root_logger = logging.getLogger()
     root_logger.setLevel(level)

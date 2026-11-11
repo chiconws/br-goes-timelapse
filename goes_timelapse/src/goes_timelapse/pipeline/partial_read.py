@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import http.client
@@ -13,6 +14,7 @@ from pathlib import Path
 import struct
 import threading
 import time
+from typing import Any, cast
 from urllib.parse import urlsplit
 import zlib
 
@@ -23,6 +25,7 @@ from rasterio import Affine
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
 from rasterio.warp import reproject, transform_bounds
+from typing_extensions import override
 
 LOGGER = logging.getLogger(__name__)
 WGS84_CRS = CRS.from_epsg(4326)
@@ -150,6 +153,7 @@ class RangeFile(io.RawIOBase):
             with self._lock:
                 self._connections.discard(connection)
 
+    @override
     def close(self) -> None:
         """Close every pooled connection."""
         self._pool.shutdown()
@@ -158,18 +162,22 @@ class RangeFile(io.RawIOBase):
         self._connections.clear()
         super().close()
 
+    @override
     def readable(self) -> bool:
         """Return True: the file can be read."""
         return True
 
+    @override
     def seekable(self) -> bool:
         """Return True: the file can seek."""
         return True
 
+    @override
     def tell(self) -> int:
         """Return the current position."""
         return self._position
 
+    @override
     def seek(self, offset: int, whence: int = 0) -> int:
         """Move the position like io.RawIOBase.seek."""
         self._position = {0: offset, 1: self._position + offset, 2: self.size + offset}[
@@ -203,7 +211,8 @@ class RangeFile(io.RawIOBase):
             self.network_seconds += time.perf_counter() - started_at
         return self._blocks[index]
 
-    def readinto(self, buffer) -> int:
+    @override
+    def readinto(self, buffer: Any) -> int:  # writable buffer from h5py
         """Fill buffer from the current position."""
         count = min(len(buffer), max(self.size - self._position, 0))
         done = 0
@@ -248,7 +257,7 @@ def write_abi_crop(
         with h5py.File(remote, "r") as dataset:
             source_crs = _geostationary_crs(dataset)
             height = float(
-                dataset["goes_imager_projection"].attrs["perspective_point_height"][0]
+                _attrs(dataset, "goes_imager_projection")["perspective_point_height"][0]
             )
             axes = _axis_scales(dataset, height)
             _paint_bbox(
@@ -272,7 +281,7 @@ def write_abi_crop(
 
 
 def _geostationary_crs(dataset: h5py.File) -> CRS:
-    projection = dataset["goes_imager_projection"].attrs
+    projection = _attrs(dataset, "goes_imager_projection")
     sweep = projection["sweep_angle_axis"]
     sweep = sweep.decode() if isinstance(sweep, bytes) else str(sweep)
     return CRS.from_proj4(
@@ -286,7 +295,7 @@ def _geostationary_crs(dataset: h5py.File) -> CRS:
 def _axis_scales(
     dataset: h5py.File, height: float
 ) -> tuple[float, float, float, float]:
-    x_attrs, y_attrs = dataset["x"].attrs, dataset["y"].attrs
+    x_attrs, y_attrs = _attrs(dataset, "x"), _attrs(dataset, "y")
     return (
         float(x_attrs["scale_factor"][0]) * height,
         float(x_attrs["add_offset"][0]) * height,
@@ -312,7 +321,7 @@ def _paint_bbox(
     x_min, y_min, x_max, y_max = transform_bounds(
         WGS84_CRS, source_crs, *padded, densify_pts=21
     )
-    radiance = dataset["Rad"]
+    radiance = _node(dataset, "Rad")
     rows, columns = radiance.shape
     # Index math stays in float until floor/ceil; the y axis runs downward.
     row_start = max(math.floor((y_max - y_offset) / y_scale) - READ_MARGIN_PIXELS, 0)
@@ -376,7 +385,7 @@ def _counts_to_gray_alpha(
     band: str,
     counts: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    attrs = dataset["Rad"].attrs
+    attrs = _attrs(dataset, "Rad")
     fill_value = attrs["_FillValue"][0]
     scale = float(attrs["scale_factor"][0])
     offset = float(attrs["add_offset"][0])
@@ -389,7 +398,7 @@ def _counts_to_gray_alpha(
             _brightness_temperature(
                 radiance,
                 *(
-                    float(dataset[name][()])
+                    float(_node(dataset, name)[()])
                     for name in (
                         "planck_fk1",
                         "planck_fk2",
@@ -400,7 +409,9 @@ def _counts_to_gray_alpha(
             )
         )
     else:
-        normalized = np.sqrt(np.clip(radiance * float(dataset["kappa0"][()]), 0.0, 1.0))
+        normalized = np.sqrt(
+            np.clip(radiance * float(_node(dataset, "kappa0")[()]), 0.0, 1.0)
+        )
     gray = np.rint(np.clip(normalized, 0.0, 1.0) * 255).astype(np.uint8)
     gray[~valid] = 0
     return gray, valid.astype(np.uint8) * 255
@@ -413,7 +424,7 @@ def _brightness_temperature(
     bc1: float,
     bc2: float,
 ) -> np.ndarray:
-    return (fk2 / np.log(fk1 / radiance + 1.0) - bc1) / bc2
+    return cast(np.ndarray, (fk2 / np.log(fk1 / radiance + 1.0) - bc1) / bc2)
 
 
 def _enhance_brightness_temperature(temperature: np.ndarray) -> np.ndarray:
@@ -534,12 +545,16 @@ def read_glm_flashes_with_hdf5(url: str, *, user_agent: str) -> list[dict[str, f
     remote = RangeFile(url, block_size=GLM_CHECK_BLOCK_SIZE, user_agent=user_agent)
     try:
         with h5py.File(remote, "r") as dataset:
-            return valid_flash_points(dataset["flash_lat"][:], dataset["flash_lon"][:])
+            return valid_flash_points(
+                _node(dataset, "flash_lat")[:], _node(dataset, "flash_lon")[:]
+            )
     finally:
         remote.close()
 
 
-def valid_flash_points(latitudes, longitudes) -> list[dict[str, float]]:
+def valid_flash_points(
+    latitudes: Iterable[float], longitudes: Iterable[float]
+) -> list[dict[str, float]]:
     """Return the finite flash coordinates as points."""
     return [
         {"lat": latitude, "lon": longitude}
@@ -548,3 +563,13 @@ def valid_flash_points(latitudes, longitudes) -> list[dict[str, float]]:
         )
         if -90.0 <= latitude <= 90.0 and -180.0 <= longitude <= 180.0
     ]
+
+
+def _node(dataset: h5py.File, name: str) -> h5py.Dataset:
+    """Return a variable of the file; GOES files keep them at the root."""
+    return cast(h5py.Dataset, dataset[name])
+
+
+def _attrs(dataset: h5py.File, name: str) -> Mapping[str, Any]:
+    """Return the attributes of a variable of the file."""
+    return cast(Mapping[str, Any], dataset[name].attrs)
