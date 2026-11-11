@@ -71,7 +71,7 @@ def _logger_trace(
 
 
 def _module_trace(message: str, *args: object, **kwargs: object) -> None:
-    logging.log(
+    logging.log(  # noqa: LOG015 - module-level logging.trace mirrors logging.log
         TRACE_LEVEL,
         message,
         *args,
@@ -122,7 +122,7 @@ def configure_logging(level: int) -> None:
 
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(SeverityColorFormatter(datefmt="%Y-%m-%d %H:%M:%S"))
-    handler._goes_timelapse_handler = True
+    handler._goes_timelapse_handler = True  # noqa: SLF001 - marks our handler for reconfiguration
 
     root_logger = logging.getLogger()
     root_logger.setLevel(level)

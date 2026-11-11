@@ -29,7 +29,7 @@ class MarkerPayload(BaseModel):
     lon: float
 
 
-def create_app(
+def create_app(  # noqa: C901 - FastAPI routes are closures over the service
     settings: Settings | None = None,
     *,
     start_background_tasks: bool = True,

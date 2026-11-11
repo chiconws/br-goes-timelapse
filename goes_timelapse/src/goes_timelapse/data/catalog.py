@@ -23,8 +23,7 @@ def normalize_text(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", value)
     normalized = normalized.encode("ascii", "ignore").decode("ascii")
     normalized = re.sub(r"[^0-9a-z]+", " ", normalized.lower())
-    normalized = " ".join(normalized.split())
-    return normalized
+    return " ".join(normalized.split())
 
 
 def load_boundary_lines(path: Path) -> tuple[BoundaryLine, ...]:
@@ -54,7 +53,7 @@ def _coerce_bounds(raw_bounds: object) -> tuple[float, float, float, float]:
 
 def _coerce_float(value: object) -> float:
     if not isinstance(value, int | float | str):
-        raise ValueError("Invalid boundary coordinate")
+        raise ValueError("Invalid boundary coordinate")  # noqa: TRY004 - malformed payload is a ValueError
     return float(value)
 
 

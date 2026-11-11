@@ -169,7 +169,7 @@ def _load_json_url(url: str) -> list[dict[str, object]]:
         raw = gzip.decompress(raw)
     payload = json.loads(raw.decode("utf-8"))
     if not isinstance(payload, list):
-        raise ValueError(f"Unexpected payload from {url}")
+        raise ValueError(f"Unexpected payload from {url}")  # noqa: TRY004 - malformed payload is a ValueError
     return payload
 
 
@@ -204,7 +204,7 @@ def main() -> None:
         population_source=args.population_source,
         localidades_base_url=args.localidades_base_url,
     )
-    print(f"Wrote {len(rows)} areas to {args.output}")
+    print(f"Wrote {len(rows)} areas to {args.output}")  # noqa: T201 - CLI output
 
 
 if __name__ == "__main__":

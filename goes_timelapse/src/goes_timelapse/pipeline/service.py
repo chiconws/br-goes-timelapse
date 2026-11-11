@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from datetime import UTC, datetime
 from pathlib import Path
 import shutil
@@ -221,17 +222,13 @@ class GoesTimelapseService:
         """Cancel the background tasks and close sessions."""
         if self._immediate_refresh_task is not None:
             self._immediate_refresh_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._immediate_refresh_task
-            except asyncio.CancelledError:
-                pass
         for task in self._tasks:
             task.cancel()
         for task in self._tasks:
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await task
-            except asyncio.CancelledError:
-                pass
         self.state_store.close()
 
     async def add_tracked(self, area_id: str) -> TrackedArea:
@@ -580,15 +577,14 @@ class GoesTimelapseService:
     ) -> bool:
         try:
             self.state_store.set_status(area_id, status, **kwargs)
-            return True
-        except sqlite3.Error as err:
+        except sqlite3.Error:
             LOGGER.exception(
-                "Failed to persist area status for %s -> %s: %s",
+                "Failed to persist area status for %s -> %s",
                 area_id,
                 status,
-                err,
             )
             return False
+        return True
 
     def _schedule_immediate_refresh(self) -> None:
         if (
