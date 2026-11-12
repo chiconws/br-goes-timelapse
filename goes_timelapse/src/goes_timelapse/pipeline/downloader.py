@@ -555,12 +555,10 @@ class GlmDownloader(_NoaaDownloader):
                 ) as response:
                     _raise_for_response(response)
                     if response.status != 206:
-                        raise ValueError(f"Range ignorado: HTTP {response.status}")
+                        raise ValueError(f"Range not honored: HTTP {response.status}")
                     data: bytes = await response.read()
                 if len(data) != end - start:
-                    raise ValueError(
-                        f"Leitura curta: {len(data)} de {end - start} bytes"
-                    )
+                    raise ValueError(f"Short read: {len(data)} of {end - start} bytes")
                 self._bytes_read += len(data)
                 self._requests += 1
                 return data  # noqa: TRY300 - return inside the retry loop

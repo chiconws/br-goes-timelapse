@@ -528,8 +528,8 @@ class AreaRenderer:
     ) -> Window:
         min_x, min_y, max_x, max_y = dst_bounds
         inverse_transform = ~src.transform
-        left_col, top_row = inverse_transform * (min_x, max_y)
-        right_col, bottom_row = inverse_transform * (max_x, min_y)
+        left_col, top_row = inverse_transform @ (min_x, max_y)
+        right_col, bottom_row = inverse_transform @ (max_x, min_y)
 
         margin = 24
         col_off = math.floor(min(left_col, right_col)) - margin
@@ -717,4 +717,4 @@ def _read_crop(path: Path, plan: RenderPlan) -> Image.Image:
                 dst_nodata=0,
                 resampling=resampling,
             )
-    return Image.fromarray(np.dstack((gray, gray, gray, alpha)), mode="RGBA")
+    return Image.fromarray(np.dstack((gray, gray, gray, alpha)))
