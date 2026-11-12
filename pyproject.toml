@@ -244,6 +244,15 @@ disallow_untyped_defs = true
 warn_return_any = true
 warn_unreachable = true
 
+# Tests are untyped pytest functions with fakes standing in for typed objects,
+# as in Pyright's tests environment below.
+[[tool.mypy.overrides]]
+module = ["tests", "tests.*"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+disable_error_code = ["arg-type", "explicit-override", "method-assign", "misc"]
+
 # Same settings Pylance reads in VS Code, so the editor and the gate agree.
 [tool.pyright]
 venvPath = "."
