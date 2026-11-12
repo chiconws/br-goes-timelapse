@@ -693,26 +693,6 @@ class WebpBuilder:
         return output_path
 
 
-def write_lovelace_snippet(
-    snippets_dir: Path, area: AreaCatalogEntry, area_id: str
-) -> Path:
-    """Write a picture-card YAML snippet for the area."""
-    snippet_path = snippets_dir / f"{area_id}.yaml"
-    snippet = (
-        f"# {area.display_name}\n"
-        "type: picture\n"
-        f"image: media-source://media_source/local/goes_timelapse/{area_id}.webp\n"
-        "tap_action:\n"
-        "  action: none\n"
-        "hold_action:\n"
-        "  action: none\n"
-    )
-    temporary_path = snippet_path.with_suffix(".yaml.tmp")
-    temporary_path.write_text(snippet, encoding="utf-8")
-    temporary_path.replace(snippet_path)
-    return snippet_path
-
-
 def _read_crop(path: Path, plan: RenderPlan) -> Image.Image:
     """Reproject a cached gray+alpha WGS84 crop onto the plan's output grid."""
     width, height = plan.output_size

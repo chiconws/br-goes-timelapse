@@ -202,7 +202,6 @@ def test_process_area_continues_when_processing_status_write_fails(
     png_path.write_bytes(b"png")
 
     media_path = settings.media_dir / f"{area.area_id}.webp"
-    snippet_path = settings.snippets_dir / f"{area.area_id}.yaml"
 
     monkeypatch.setattr(
         service,
@@ -246,9 +245,6 @@ def test_process_area_continues_when_processing_status_write_fails(
     monkeypatch.setattr(
         service.webp_builder, "build", lambda *args, **kwargs: media_path
     )
-    monkeypatch.setattr(
-        service_module, "write_lovelace_snippet", lambda *args, **kwargs: snippet_path
-    )
 
     original_set_status = state_store.set_status
 
@@ -259,11 +255,10 @@ def test_process_area_continues_when_processing_status_write_fails(
 
     monkeypatch.setattr(state_store, "set_status", flaky_set_status)
 
-    rendered = service._process_area(area.area_id)
+    service._process_area(area.area_id)
     tracked = state_store.get_tracked(area.area_id)
     state_store.close()
 
-    assert rendered is not None
     assert tracked is not None
     assert tracked.status == "ready"
 
@@ -342,7 +337,6 @@ def test_process_area_rebuilds_existing_media_when_frames_are_available(
     png_path = settings.processed_dir / area.area_id / "frame.png"
     png_path.parent.mkdir(parents=True, exist_ok=True)
     png_path.write_bytes(b"png")
-    snippet_path = settings.snippets_dir / f"{area.area_id}.yaml"
     monkeypatch.setattr(
         service.geometry_store,
         "load_geometry",
@@ -365,15 +359,11 @@ def test_process_area_rebuilds_existing_media_when_frames_are_available(
     monkeypatch.setattr(
         service.webp_builder, "build", lambda *args, **kwargs: media_path
     )
-    monkeypatch.setattr(
-        service_module, "write_lovelace_snippet", lambda *args, **kwargs: snippet_path
-    )
 
-    rendered = service._process_area(area.area_id)
+    service._process_area(area.area_id)
     tracked = state_store.get_tracked(area.area_id)
     state_store.close()
 
-    assert rendered is not None
     assert tracked is not None
     assert tracked.status == "ready"
     assert tracked.media_path == str(media_path)
@@ -407,7 +397,6 @@ def test_process_area_renders_new_area_after_bootstrap_minimum(settings, monkeyp
     png_path.write_bytes(b"png")
 
     media_path = settings.media_dir / f"{area.area_id}.webp"
-    snippet_path = settings.snippets_dir / f"{area.area_id}.yaml"
 
     monkeypatch.setattr(
         service,
@@ -487,15 +476,11 @@ def test_process_area_renders_new_area_after_bootstrap_minimum(settings, monkeyp
     monkeypatch.setattr(
         service.webp_builder, "build", lambda *args, **kwargs: media_path
     )
-    monkeypatch.setattr(
-        service_module, "write_lovelace_snippet", lambda *args, **kwargs: snippet_path
-    )
 
-    rendered = service._process_area(area.area_id)
+    service._process_area(area.area_id)
     tracked = state_store.get_tracked(area.area_id)
     state_store.close()
 
-    assert rendered is not None
     assert tracked is not None
     assert tracked.status == "ready"
 

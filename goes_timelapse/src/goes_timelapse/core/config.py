@@ -45,7 +45,6 @@ class Settings:
     processed_dir: Path
     geometry_cache_dir: Path
     media_dir: Path
-    snippets_dir: Path
     db_path: Path
     catalog_path: Path
     state_boundaries_path: Path
@@ -65,7 +64,6 @@ class Settings:
         processed_dir = data_dir / "processed"
         geometry_cache_dir = data_dir / "geometry"
         media_dir = _env_path("GOES_MEDIA_DIR", "/media/goes_timelapse")
-        snippets_dir = _env_path("GOES_SNIPPETS_DIR", "/config/goes_timelapse/lovelace")
         db_path = state_dir / "state.db"
         catalog_path = _env_path(
             "GOES_CATALOG_PATH",
@@ -100,7 +98,6 @@ class Settings:
             processed_dir=processed_dir,
             geometry_cache_dir=geometry_cache_dir,
             media_dir=media_dir,
-            snippets_dir=snippets_dir,
             db_path=db_path,
             catalog_path=catalog_path,
             state_boundaries_path=state_boundaries_path,
@@ -126,6 +123,5 @@ class Settings:
             self.processed_dir,
             self.geometry_cache_dir,
             self.media_dir,
-            self.snippets_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)

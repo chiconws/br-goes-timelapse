@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 
 class _MunicipalityLabels:
@@ -84,14 +83,3 @@ class TrackedArea(_MunicipalityLabels):
     snippet_path: str | None
     marker_lat: float | None
     marker_lon: float | None
-
-
-@dataclass(slots=True, frozen=True)
-class RenderedArea:
-    """Result of rendering one municipality."""
-
-    area: AreaCatalogEntry
-    png_paths: list[Path]
-    media_path: Path
-    snippet_path: Path
-    latest_source_timestamp: str

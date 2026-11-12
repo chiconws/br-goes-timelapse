@@ -470,4 +470,7 @@
     var theme = document.documentElement.getAttribute("data-theme") || "dark";
     return theme === "light" ? "light" : "dark";
   }
+
+  // Deferred scripts run after parsing, so the DOM is ready here.
+  initialize();
 })(window, document);

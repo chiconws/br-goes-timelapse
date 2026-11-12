@@ -20,7 +20,6 @@ from goes_timelapse.pipeline.rendering import (
     RenderPlan,
     WebpBuilder,
     format_capture_time,
-    write_lovelace_snippet,
 )
 from tests.helpers import create_test_tif
 
@@ -61,10 +60,8 @@ def test_renderer_processes_visible_frames_and_builds_webp(settings):
     assert all(path.exists() for path in png_paths)
 
     media_path = WebpBuilder(settings).build(area.area_id, png_paths)
-    snippet_path = write_lovelace_snippet(settings.snippets_dir, area, area.area_id)
 
     assert media_path.exists()
-    assert snippet_path.exists()
 
 
 def test_large_municipalities_get_less_extra_margin_than_small_ones(settings):
