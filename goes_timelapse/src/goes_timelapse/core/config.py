@@ -63,55 +63,32 @@ class Settings:
         raw_dir = data_dir / "raw"
         processed_dir = data_dir / "processed"
         geometry_cache_dir = data_dir / "geometry"
-        media_dir = _env_path("GOES_MEDIA_DIR", "/media/goes_timelapse")
         db_path = state_dir / "state.db"
-        catalog_path = _env_path(
-            "GOES_CATALOG_PATH",
-            str(package_dir / "assets" / "areas.json.gz"),
-        )
-        state_boundaries_path = _env_path(
-            "GOES_STATE_BOUNDARIES_PATH",
-            str(package_dir / "assets" / "state_boundaries.json.gz"),
-        )
-        allowed_hosts = tuple(
-            part.strip()
-            for part in os.getenv(
-                "GOES_ALLOWED_CLIENT_HOSTS",
-                "127.0.0.1,::1,testclient,172.30.32.2",
-            ).split(",")
-            if part.strip()
-        )
         log_level = resolve_log_level(os.getenv("GOES_LOG_LEVEL", "INFO"))
         return cls(
-            host=os.getenv("GOES_HOST", "0.0.0.0"),
-            port=_env_int("GOES_PORT", 8099),
-            goes_url=os.getenv("GOES_URL", "https://noaa-goes19.s3.amazonaws.com/"),
+            host="0.0.0.0",
+            port=8099,
+            goes_url="https://noaa-goes19.s3.amazonaws.com/",
             poll_minutes=_env_int("GOES_POLL_MINUTES", 2),
             frame_count=_env_int("GOES_FRAME_COUNT", 10),
             gif_fps=_env_int("GOES_GIF_FPS", 2),
             solar_margin_hours=_env_int("GOES_SOLAR_MARGIN_HOURS", 0),
-            max_tracked=_env_int("GOES_MAX_TRACKED", 5),
+            max_tracked=5,
             log_level=log_level,
             data_dir=data_dir,
             state_dir=state_dir,
             raw_dir=raw_dir,
             processed_dir=processed_dir,
             geometry_cache_dir=geometry_cache_dir,
-            media_dir=media_dir,
+            media_dir=Path("/media/goes_timelapse"),
             db_path=db_path,
-            catalog_path=catalog_path,
-            state_boundaries_path=state_boundaries_path,
-            ibge_malhas_url=os.getenv(
-                "GOES_IBGE_MALHAS_URL",
-                "https://servicodados.ibge.gov.br/api/v4/malhas",
-            ),
-            ibge_request_timeout=_env_int("GOES_IBGE_TIMEOUT_SECONDS", 30),
-            font_path=_env_path(
-                "GOES_FONT_PATH",
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            ),
-            allowed_client_hosts=allowed_hosts,
-            max_render_dimension=_env_int("GOES_MAX_RENDER_DIMENSION", 900),
+            catalog_path=package_dir / "assets" / "areas.json.gz",
+            state_boundaries_path=package_dir / "assets" / "state_boundaries.json.gz",
+            ibge_malhas_url="https://servicodados.ibge.gov.br/api/v4/malhas",
+            ibge_request_timeout=30,
+            font_path=Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+            allowed_client_hosts=("127.0.0.1", "::1", "testclient", "172.30.32.2"),
+            max_render_dimension=900,
         )
 
     def ensure_directories(self) -> None:
