@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 from goes_timelapse.core.config import Settings
-from goes_timelapse.core.logging_utils import TraceLogger, get_logger
+from goes_timelapse.core.logging_utils import get_logger
 from goes_timelapse.pipeline.rendering import parse_goes_timestamp
 from goes_timelapse.pipeline.runtime_types import (
     RAW_SOURCE_INFRARED,
@@ -46,12 +46,13 @@ def raw_files_for_source(settings: Settings, source_key: str) -> list[RawFileEnt
     return entries
 
 
-def all_raw_files(
-    settings: Settings, source_keys: tuple[str, ...]
-) -> list[RawFileEntry]:
-    """List the cached files of several sources."""
+RAW_SOURCES = (RAW_SOURCE_VISIBLE, RAW_SOURCE_INFRARED, RAW_SOURCE_LIGHTNING)
+
+
+def all_raw_files(settings: Settings) -> list[RawFileEntry]:
+    """List the cached files of every source."""
     files: list[RawFileEntry] = []
-    for source_key in source_keys:
+    for source_key in RAW_SOURCES:
         files.extend(raw_files_for_source(settings, source_key))
     files.sort(
         key=lambda item: parse_goes_timestamp(item["filename"]),
@@ -69,15 +70,6 @@ def raw_timestamp_count(items: list[RawFileEntry]) -> int:
             if (timestamp := parse_goes_timestamp(item["filename"]))
         }
     )
-
-
-def raw_disk_usage_bytes(settings: Settings, source_keys: tuple[str, ...]) -> int:
-    """Return the bytes used by the cached files of these sources."""
-    total = 0
-    for source_key in source_keys:
-        for item in raw_files_for_source(settings, source_key):
-            total += item["size_bytes"]
-    return total
 
 
 def available_raw_paths_by_source(
@@ -106,7 +98,6 @@ def available_raw_paths_by_source(
 
 def available_lightning_points_by_timestamp(
     settings: Settings,
-    logger: TraceLogger,
 ) -> dict[str, tuple[tuple[float, float], ...]]:
     """Load the cached GLM flash points per slot."""
     points_by_timestamp: dict[str, tuple[tuple[float, float], ...]] = {}
@@ -117,7 +108,7 @@ def available_lightning_points_by_timestamp(
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            logger.warning("Skipping invalid lightning cache file: %s", path.name)
+            LOGGER.warning("Skipping invalid lightning cache file: %s", path.name)
             continue
         flashes = payload.get("flashes") or []
         points: list[tuple[float, float]] = []
@@ -131,7 +122,7 @@ def available_lightning_points_by_timestamp(
                 continue
             points.append((longitude, latitude))
         points_by_timestamp[timestamp] = tuple(points)
-    logger.trace(
+    LOGGER.trace(
         "Loaded lightning points by timestamp: %s",
         {
             timestamp: len(points)
@@ -144,15 +135,13 @@ def available_lightning_points_by_timestamp(
 def prune_raw_cache(
     *,
     settings: Settings,
-    source_keys: tuple[str, ...],
     keep_timestamps_by_source: dict[str, tuple[str, ...]],
-    logger: TraceLogger,
 ) -> str | None:
     """Delete cached files outside the timeline; return an error message, if any."""
-    for source_key in source_keys:
+    for source_key in RAW_SOURCES:
         raw_dir = settings.raw_dir / source_key
         keep_timestamps = set(keep_timestamps_by_source[source_key])
-        logger.trace(
+        LOGGER.trace(
             "Raw cache keep-set for %s: %s",
             source_key,
             sorted(keep_timestamps, reverse=True),
@@ -172,18 +161,18 @@ def prune_raw_cache(
                 file_path.unlink(missing_ok=True)
 
         if deleted_files:
-            logger.info(
+            LOGGER.info(
                 "Pruned %s files for %s outside retention window: %s",
                 len(deleted_files),
                 source_key,
                 deleted_files,
             )
         else:
-            logger.trace("No raw cache pruning needed for %s", source_key)
+            LOGGER.trace("No raw cache pruning needed for %s", source_key)
 
     retained_files = [
         path
-        for source_key in source_keys
+        for source_key in RAW_SOURCES
         for path in raw_files_in_dir(settings.raw_dir / source_key, source_key)
     ]
     return latest_kept_timestamp(retained_files)
