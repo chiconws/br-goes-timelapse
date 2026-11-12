@@ -23,6 +23,7 @@ def test_geotiff_source_honors_requested_destination_bounds(tmp_path):
     grayscale = np.zeros((height, width), dtype=np.uint8)
     grayscale[:, 20:] = 255
     alpha = np.full((height, width), 255, dtype=np.uint8)
+    alpha[10:20, 25:35] = 0
 
     with rasterio.open(
         raw_path,
@@ -51,3 +52,5 @@ def test_geotiff_source_honors_requested_destination_bounds(tmp_path):
     image_array = np.asarray(image)
     assert image.size == (200, 200)
     assert float(image_array[..., 0].mean()) > 240
+    assert image_array[..., 3].min() == 0
+    assert image_array[..., 3].max() == 255

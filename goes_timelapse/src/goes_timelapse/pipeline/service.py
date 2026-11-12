@@ -163,6 +163,9 @@ class GoesTimelapseService:
     async def start(self) -> None:
         """Start the background refresh and render tasks."""
         self.settings.ensure_directories()
+        # Full-file downloads (1.1.x) staged here; nothing writes them since 1.2.0.
+        for legacy_dir in ("source", "tmp"):
+            shutil.rmtree(self.settings.data_dir / legacy_dir, ignore_errors=True)
         LOGGER.info(
             "Storage configured: data_dir=%s state_dir=%s media_dir=%s",
             self.settings.data_dir,
