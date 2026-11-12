@@ -46,41 +46,6 @@ def create_test_tif(
     return path
 
 
-def create_test_rgba_tif(
-    path: Path,
-    transform: Affine | None = None,
-    *,
-    width: int = 512,
-    height: int = 512,
-) -> Path:
-    """Write a small RGBA GeoTIFF."""
-    transform = transform or Affine(0.02, 0.0, -50.0, 0.0, -0.02, -20.0)
-    x = np.tile(np.linspace(0, 255, width, dtype=np.uint8), (height, 1))
-    y = np.tile(
-        np.linspace(255, 0, height, dtype=np.uint8).reshape(height, 1), (1, width)
-    )
-    red = x
-    green = y
-    blue = np.full((height, width), 96, dtype=np.uint8)
-    alpha = np.full((height, width), 255, dtype=np.uint8)
-    with rasterio.open(
-        path,
-        "w",
-        driver="GTiff",
-        width=width,
-        height=height,
-        count=4,
-        dtype="uint8",
-        crs="EPSG:4326",
-        transform=transform,
-    ) as dst:
-        dst.write(red, 1)
-        dst.write(green, 2)
-        dst.write(blue, 3)
-        dst.write(alpha, 4)
-    return path
-
-
 def create_test_netcdf(
     path: Path,
     *,

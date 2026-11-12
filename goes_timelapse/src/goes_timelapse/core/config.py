@@ -8,8 +8,6 @@ from pathlib import Path
 import shutil
 import subprocess
 
-from rasterio import Affine
-
 from goes_timelapse.core.logging_utils import resolve_log_level
 
 REMOTE_FILESYSTEM_TYPES = {
@@ -80,7 +78,6 @@ class Settings:
     font_path: Path
     allowed_client_hosts: tuple[str, ...]
     max_render_dimension: int
-    transform: Affine
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -162,14 +159,6 @@ class Settings:
             ),
             allowed_client_hosts=allowed_hosts,
             max_render_dimension=_env_int("GOES_MAX_RENDER_DIMENSION", 900),
-            transform=Affine(
-                0.008997,
-                0.0,
-                -151.4654998779297,
-                0.0,
-                -0.008997,
-                76.46549987792969,
-            ),
         )
 
     def ensure_directories(self) -> None:

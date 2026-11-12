@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from rasterio import Affine
-
 from goes_timelapse.core import config as config_module
 from goes_timelapse.core.config import Settings
 
@@ -138,7 +136,6 @@ def test_ensure_directories_cleans_legacy_geo2grid_dirs(tmp_path):
         font_path=tmp_path / "font.ttf",
         allowed_client_hosts=("testclient",),
         max_render_dimension=900,
-        transform=Affine(1, 0, 0, 0, -1, 0),
     )
 
     legacy_dirs = [

@@ -84,18 +84,3 @@ class RawFileEntry(TypedDict):
     size_bytes: int
     modified_at: str
     label: str
-
-
-class GlmFlashPoint(TypedDict):
-    """One GLM flash position."""
-
-    lat: float
-    lon: float
-
-
-class GlmSlotRecord(TypedDict):
-    """Flashes aggregated for one GLM slot."""
-
-    slot_timestamp: str
-    source_filenames: list[str]
-    flashes: list[GlmFlashPoint]

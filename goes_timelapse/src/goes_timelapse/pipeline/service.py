@@ -60,7 +60,6 @@ from goes_timelapse.pipeline.runtime_types import (
 from goes_timelapse.pipeline.storage_guard import (
     blocking_storage_message,
     build_storage_checks,
-    format_bytes,
     storage_warning_summary,
     worst_staging_check,
 )
@@ -718,7 +717,6 @@ class GoesTimelapseService:
                 self.settings.raw_dir / source_key / area_id, ignore_errors=True
             )
         self.media_path(area_id).unlink(missing_ok=True)
-        (self.settings.media_dir / f"{area_id}.gif").unlink(missing_ok=True)
         (self.settings.snippets_dir / f"{area_id}.yaml").unlink(missing_ok=True)
 
     @staticmethod
@@ -728,8 +726,6 @@ class GoesTimelapseService:
         except OSError:
             LOGGER.warning("Skipping unreadable raw frame metadata: %s", path)
             return False
-
-    _process_municipality = _process_area
 
     def _update_raw_download_status(
         self, source_key: str, payload: dict[str, object]
@@ -1100,10 +1096,6 @@ class GoesTimelapseService:
         storage_checks: dict[str, StorageCheck],
     ) -> str | None:
         return blocking_storage_message(storage_checks)
-
-    @staticmethod
-    def _format_bytes(value: int) -> str:
-        return format_bytes(value)
 
 
 def _coerce_int(value: object | None) -> int:

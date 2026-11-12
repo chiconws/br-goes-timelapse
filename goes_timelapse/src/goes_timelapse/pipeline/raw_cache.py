@@ -142,17 +142,6 @@ def available_lightning_points_by_timestamp(
     return points_by_timestamp
 
 
-def available_lightning_paths_by_timestamp(settings: Settings) -> dict[str, Path]:
-    """Map each GLM slot to its cached file."""
-    paths: dict[str, Path] = {}
-    for path in (settings.raw_dir / RAW_SOURCE_LIGHTNING).glob("*.json"):
-        timestamp = parse_goes_timestamp(path.name)
-        if goes_timestamp_to_datetime(timestamp) is None:
-            continue
-        paths[timestamp] = path
-    return paths
-
-
 def prune_raw_cache(
     *,
     settings: Settings,
