@@ -249,8 +249,8 @@ class GoesTimelapseService:
             raise KeyError(area_id)
 
         area = self.catalog.get(area_id)
-        if area is None or area.area_type != "municipio":
-            raise ValueError("O marcador só é suportado para municípios acompanhados")
+        if area is None:
+            raise KeyError(area_id)
 
         geometry = await asyncio.to_thread(self.geometry_store.load_geometry, area)
         min_lon, min_lat, max_lon, max_lat = self.renderer.destination_bounds(geometry)

@@ -11,10 +11,6 @@ import urllib.request
 
 from goes_timelapse.core.models import AreaCatalogEntry, AreaGeometry
 
-MALHAS_SEGMENTS = {
-    "municipio": "municipios",
-}
-
 
 class IbgeGeometryStore:
     """Fetch and cache municipality outlines from IBGE."""
@@ -38,10 +34,9 @@ class IbgeGeometryStore:
 
     def fetch_geometry(self, area: AreaCatalogEntry) -> AreaGeometry:
         """Download the outline from IBGE and cache it."""
-        segment = MALHAS_SEGMENTS[area.area_type]
         encoded_code = quote(area.area_code, safe="")
         url = (
-            f"{self._base_url}/{segment}/{encoded_code}"
+            f"{self._base_url}/municipios/{encoded_code}"
             "?formato=application%2Fvnd.geo%2Bjson"
         )
         payload = _load_json_url(url, timeout_seconds=self._timeout_seconds)
