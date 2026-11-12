@@ -18,6 +18,7 @@ import xml.etree.ElementTree as ET
 import aiohttp
 from typing_extensions import TypedDict
 
+from goes_timelapse import __version__
 from goes_timelapse.core.logging_utils import get_logger
 from goes_timelapse.pipeline.partial_read import (
     GLM_LAT_NODE,
@@ -49,7 +50,7 @@ GLM_LAYOUT_CHECK_SECONDS = 3600
 LOOKBACK_HOURS = 4
 REQUEST_HEADERS = {
     "Accept-Encoding": "identity",
-    "User-Agent": "br-goes-timelapse/1.2.0",
+    "User-Agent": f"br-goes-timelapse/{__version__}",
 }
 LISTING_TIMEOUT = aiohttp.ClientTimeout(
     total=45, connect=15, sock_connect=15, sock_read=20
