@@ -73,18 +73,6 @@ def _logger_trace(
         )
 
 
-def _module_trace(message: str, *args: object, **kwargs: object) -> None:
-    logging.log(  # noqa: LOG015 - module-level logging.trace mirrors logging.log
-        TRACE_LEVEL,
-        message,
-        *args,
-        exc_info=cast(Any, kwargs.get("exc_info")),
-        extra=cast(Mapping[str, object] | None, kwargs.get("extra")),
-        stack_info=cast(bool, kwargs.get("stack_info", False)),
-        stacklevel=cast(int, kwargs.get("stacklevel", 1)),
-    )
-
-
 def register_trace_level() -> None:
     """Register TRACE with the logging module once."""
     if getattr(logging, TRACE_LEVEL_NAME, None) != TRACE_LEVEL:
@@ -93,9 +81,6 @@ def register_trace_level() -> None:
 
     if not hasattr(logging.Logger, "trace"):
         logging.Logger.trace = _logger_trace  # type: ignore[attr-defined]
-
-    if not hasattr(logging, "trace"):
-        logging.trace = _module_trace  # type: ignore[attr-defined]
 
 
 def get_logger(name: str) -> TraceLogger:

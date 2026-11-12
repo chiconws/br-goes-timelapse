@@ -41,11 +41,6 @@ class AreaTimelinePlan:
     area_id: str
     frames: tuple[TimelineFrame, ...]
 
-    @property
-    def slot_timestamps(self) -> tuple[str, ...]:
-        """Return the slot timestamps of every frame."""
-        return tuple(frame.slot_timestamp for frame in self.frames)
-
 
 def build_area_timeline_plan(
     *,

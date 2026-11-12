@@ -53,18 +53,6 @@ class AreaCatalogEntry:
         return self.name
 
     @property
-    def subtitle(self) -> str:
-        """Secondary line shown in search results."""
-        parts = [self.type_label]
-        if self.population:
-            parts.append(f"Pop. {self.population}")
-        elif self.state_name:
-            parts.append(self.state_name)
-        elif self.parent_name:
-            parts.append(self.parent_name)
-        return " • ".join(parts)
-
-    @property
     def code_label(self) -> str:
         """IBGE code label."""
         if self.area_type == "municipio":

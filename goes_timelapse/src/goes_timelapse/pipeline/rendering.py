@@ -754,9 +754,6 @@ class WebpBuilder:
         return output_path
 
 
-GifBuilder = WebpBuilder
-
-
 def write_lovelace_snippet(
     snippets_dir: Path, area: AreaCatalogEntry, area_id: str
 ) -> Path:
@@ -775,9 +772,6 @@ def write_lovelace_snippet(
     temporary_path.write_text(snippet, encoding="utf-8")
     temporary_path.replace(snippet_path)
     return snippet_path
-
-
-MunicipalityRenderer = AreaRenderer
 
 
 class _open_source:

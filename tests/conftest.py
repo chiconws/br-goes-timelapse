@@ -9,7 +9,6 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 import pytest
-from rasterio import Affine
 
 from goes_timelapse.app import create_app
 from goes_timelapse.core.config import Settings
@@ -90,7 +89,6 @@ def build_settings(tmp_path: Path) -> Settings:
         font_path=Path("C:/Windows/Fonts/arial.ttf"),
         allowed_client_hosts=("testclient", "127.0.0.1", "::1"),
         max_render_dimension=900,
-        transform=Affine(0.02, 0.0, -50.0, 0.0, -0.02, -20.0),
     )
     settings.ensure_directories()
     return settings
