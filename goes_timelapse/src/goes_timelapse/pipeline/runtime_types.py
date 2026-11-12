@@ -32,13 +32,9 @@ class DownloadSourcePlan:
 
 
 class ActiveDownloadEntry(TypedDict):
-    """Progress of one file being downloaded."""
+    """A file being read right now."""
 
     filename: str
-    downloaded_bytes: int
-    total_bytes: int | None
-    percent: float | None
-    stage: str
 
 
 class SourceDownloadStatus(TypedDict):
@@ -50,9 +46,6 @@ class SourceDownloadStatus(TypedDict):
     completed_count: int
     failed_count: int
     active_count: int
-    current_file: str | None
-    last_downloaded: str | None
-    latest_available: str | None
     active_downloads: list[ActiveDownloadEntry]
     schedule_reason: str
     is_relevant: bool

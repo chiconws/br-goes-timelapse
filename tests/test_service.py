@@ -900,7 +900,7 @@ def test_prune_raw_cache_discards_stale_lightning_slots_outside_global_history(
     settings, monkeypatch
 ):
     """Test prune raw cache discards stale lightning slots outside global history."""
-    adjusted_settings = replace(settings, raw_history=2)
+    adjusted_settings = settings
     catalog = AreaCatalog.from_path(adjusted_settings.catalog_path)
     state_store = StateStore(adjusted_settings.db_path)
     service = GoesTimelapseService(
@@ -954,7 +954,7 @@ def test_prune_raw_cache_discards_stale_lightning_slots_outside_global_history(
 
 def test_prune_raw_cache_removes_files_when_keep_set_is_empty(settings, monkeypatch):
     """Test prune raw cache removes files when keep set is empty."""
-    adjusted_settings = replace(settings, raw_history=2)
+    adjusted_settings = settings
     catalog = AreaCatalog.from_path(adjusted_settings.catalog_path)
     state_store = StateStore(adjusted_settings.db_path)
     service = GoesTimelapseService(
@@ -993,7 +993,7 @@ def test_prune_raw_cache_uses_timeline_keep_set_for_visible_files(
     settings, monkeypatch
 ):
     """Test prune raw cache uses timeline keep set for visible files."""
-    adjusted_settings = replace(settings, raw_history=3)
+    adjusted_settings = settings
     catalog = AreaCatalog.from_path(adjusted_settings.catalog_path)
     state_store = StateStore(adjusted_settings.db_path)
     service = GoesTimelapseService(
@@ -1129,7 +1129,7 @@ def test_prune_raw_cache_keeps_global_night_history_and_drops_visible_day_frames
     settings, monkeypatch
 ):
     """Test prune raw cache keeps global night history and drops visible day frames."""
-    adjusted_settings = replace(settings, raw_history=2)
+    adjusted_settings = settings
     catalog = AreaCatalog.from_path(adjusted_settings.catalog_path)
     state_store = StateStore(adjusted_settings.db_path)
     service = GoesTimelapseService(
@@ -1178,7 +1178,7 @@ def test_prune_raw_cache_keeps_global_day_history_and_drops_old_infrared_frames(
     settings, monkeypatch
 ):
     """Test prune raw cache keeps global day history and drops old infrared frames."""
-    adjusted_settings = replace(settings, raw_history=2)
+    adjusted_settings = settings
     catalog = AreaCatalog.from_path(adjusted_settings.catalog_path)
     state_store = StateStore(adjusted_settings.db_path)
     service = GoesTimelapseService(
@@ -1227,7 +1227,7 @@ def test_prune_raw_cache_keeps_transition_pair_within_global_history(
     settings, monkeypatch
 ):
     """Test prune raw cache keeps transition pair within global history."""
-    adjusted_settings = replace(settings, raw_history=2)
+    adjusted_settings = settings
     catalog = AreaCatalog.from_path(adjusted_settings.catalog_path)
     state_store = StateStore(adjusted_settings.db_path)
     service = GoesTimelapseService(
@@ -1287,7 +1287,7 @@ def test_prune_raw_cache_discards_slots_missing_from_timeline_keep_set(
     settings, monkeypatch
 ):
     """Test prune raw cache discards slots missing from timeline keep set."""
-    adjusted_settings = replace(settings, raw_history=2)
+    adjusted_settings = settings
     catalog = AreaCatalog.from_path(adjusted_settings.catalog_path)
     state_store = StateStore(adjusted_settings.db_path)
     service = GoesTimelapseService(
@@ -1379,8 +1379,6 @@ async def test_refresh_requeues_area_when_cache_is_newer_than_rendered_media(
             downloaded_count=0,
             attempted_count=1,
             failed_count=0,
-            last_downloaded=None,
-            latest_available=newest_raw.name,
         )
 
     queued_ids: list[str] = []
@@ -1440,8 +1438,6 @@ async def test_refresh_raw_frames_prunes_using_runtime_cache_policy(
             downloaded_count=0,
             attempted_count=3,
             failed_count=0,
-            last_downloaded=None,
-            latest_available=None,
         )
 
     prune_calls: list[str] = []
@@ -1489,14 +1485,7 @@ async def test_refresh_raw_frames_does_not_query_paused_source(settings, monkeyp
             )
         ]
 
-    service._download_status[RAW_SOURCE_INFRARED]["latest_available"] = (
-        "existing-latest.tif"
-    )
-    service._download_status[RAW_SOURCE_INFRARED]["last_downloaded"] = (
-        "existing-downloaded.tif"
-    )
-
-    async def fail_refresh_latest(*, download_missing=True, target_timestamps=None):
+    async def fail_refresh_latest(*, target_timestamps=()):
         raise AssertionError("Paused source should not be refreshed remotely")
 
     monkeypatch.setattr(service, "_build_download_plans", fake_build_download_plans)
@@ -1512,8 +1501,6 @@ async def test_refresh_raw_frames_does_not_query_paused_source(settings, monkeyp
         for item in snapshot["sources"]
         if item["source_key"] == RAW_SOURCE_INFRARED
     )
-    assert infrared["latest_available"] == "existing-latest.tif"
-    assert infrared["last_downloaded"] == "existing-downloaded.tif"
     assert infrared["phase"] == "paused"
     state_store.close()
 
