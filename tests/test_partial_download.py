@@ -29,9 +29,7 @@ from goes_timelapse.pipeline.partial_read import (
     valid_flash_points,
     write_abi_crop,
 )
-from goes_timelapse.pipeline.runtime_types import StorageCheck
 from goes_timelapse.pipeline.service import GoesTimelapseService
-from goes_timelapse.pipeline.storage_guard import blocking_storage_message
 
 GLM_NAME = "OR_GLM-L2-LCFA_G19_s20260011200000_e20260011200200_c20260011200220.nc"
 LAT_NODE, LON_NODE = 1 << 20, (1 << 20) + 4096
@@ -112,7 +110,6 @@ def _glm_downloader(tmp_path: Path, monkeypatch) -> GlmDownloader:
     downloader = GlmDownloader(
         base_url="https://example.invalid/",
         raw_dir=tmp_path / "raw",
-        raw_history=4,
     )
     downloader._layout_checked_at = float("inf")
     return downloader
@@ -316,9 +313,7 @@ def test_read_ahead_stays_off_for_scattered_reads_and_ramps_on_sequential(abi_se
 
 
 def _imagery_downloader(tmp_path: Path, url: str) -> GoesDownloader:
-    return GoesDownloader(
-        base_url=url, raw_dir=tmp_path / "raw", raw_history=4, band="C13"
-    )
+    return GoesDownloader(base_url=url, raw_dir=tmp_path / "raw", band="C13")
 
 
 C13_NAME = (
@@ -369,7 +364,6 @@ async def test_each_area_gets_its_own_folder_and_new_area_leaves_others_alone(
 
     added = await _refresh(downloader, monkeypatch, vila_velha, manaus)
     assert (added.attempted_count, added.downloaded_count) == (1, 1)
-    assert added.last_downloaded == f"{manaus.area_id}/{original.name}"
 
     after = original.stat()
     assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
@@ -501,7 +495,7 @@ async def test_glm_swapped_nodes_stop_reads_until_layout_matches(
     source.write_bytes(_glm_payload(tmp_path, 50))
     monkeypatch.setattr(downloader_module, "GLM_LAT_NODE", LON_NODE)
     monkeypatch.setattr(downloader_module, "GLM_LON_NODE", LAT_NODE)
-    downloader = GlmDownloader(base_url=url, raw_dir=tmp_path / "raw", raw_history=4)
+    downloader = GlmDownloader(base_url=url, raw_dir=tmp_path / "raw")
 
     async def listing(_session, _missing=()):
         return [GLM_NAME]
@@ -531,7 +525,7 @@ async def test_glm_inconclusive_check_withholds_flashes(
     source.write_bytes(_glm_payload(tmp_path, 50))
     monkeypatch.setattr(downloader_module, "GLM_LAT_NODE", LAT_NODE)
     monkeypatch.setattr(downloader_module, "GLM_LON_NODE", LON_NODE)
-    downloader = GlmDownloader(base_url=url, raw_dir=tmp_path / "raw", raw_history=4)
+    downloader = GlmDownloader(base_url=url, raw_dir=tmp_path / "raw")
 
     async def listing(_session, _missing=()):
         return [GLM_NAME]
@@ -549,20 +543,6 @@ async def test_glm_inconclusive_check_withholds_flashes(
     monkeypatch.setattr(downloader_module, "read_glm_flashes_with_hdf5", reference)
     recovered = await downloader.refresh_latest(target_timestamps=("20260011200",))
     assert (recovered.downloaded_count, recovered.failed_count) == (1, 0)
-
-
-def test_only_the_cache_volume_pauses_refresh(settings):
-    """Test only the cache volume pauses refresh."""
-    checks = {
-        key: StorageCheck(key, key, settings.data_dir, 0, 1, f"{key} cheio", True)
-        for key in ("cache", "source", "scratch")
-    }
-    assert (
-        blocking_storage_message(checks)
-        == "Refresh pausado por falta de espaço: cache cheio"
-    )
-    del checks["cache"]
-    assert blocking_storage_message(checks) is None
 
 
 @pytest.mark.asyncio

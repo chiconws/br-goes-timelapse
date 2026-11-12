@@ -3,11 +3,30 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
-AREA_TYPE_LABELS = {
-    "municipio": "Município",
-}
+
+class _MunicipalityLabels:
+    """UI labels shared by catalog entries and tracked municipalities."""
+
+    __slots__ = ()
+    name: str
+    area_code: str
+    state_code: str | None
+
+    @property
+    def type_label(self) -> str:
+        """Human label for the area type."""
+        return "Município"
+
+    @property
+    def display_name(self) -> str:
+        """Name with state, as shown in the UI."""
+        return f"{self.name} - {self.state_code}" if self.state_code else self.name
+
+    @property
+    def code_label(self) -> str:
+        """IBGE code label."""
+        return f"IBGE {self.area_code}"
 
 
 @dataclass(slots=True, frozen=True)
@@ -19,7 +38,7 @@ class BoundaryLine:
 
 
 @dataclass(slots=True, frozen=True)
-class AreaCatalogEntry:
+class AreaCatalogEntry(_MunicipalityLabels):
     """Municipality from the bundled catalog."""
 
     area_id: str
@@ -33,44 +52,6 @@ class AreaCatalogEntry:
     parent_code: str | None
     parent_name: str | None
 
-    @property
-    def type_label(self) -> str:
-        """Human label for the area type."""
-        return AREA_TYPE_LABELS.get(self.area_type, self.area_type)
-
-    @property
-    def context_label(self) -> str | None:
-        """State shown next to the name, if any."""
-        if self.area_type == "municipio":
-            return self.state_code
-        return None
-
-    @property
-    def display_name(self) -> str:
-        """Name with state, as shown in the UI."""
-        if self.context_label:
-            return f"{self.name} - {self.context_label}"
-        return self.name
-
-    @property
-    def subtitle(self) -> str:
-        """Secondary line shown in search results."""
-        parts = [self.type_label]
-        if self.population:
-            parts.append(f"Pop. {self.population}")
-        elif self.state_name:
-            parts.append(self.state_name)
-        elif self.parent_name:
-            parts.append(self.parent_name)
-        return " • ".join(parts)
-
-    @property
-    def code_label(self) -> str:
-        """IBGE code label."""
-        if self.area_type == "municipio":
-            return f"IBGE {self.area_code}"
-        return f"Código {self.area_code}"
-
 
 @dataclass(slots=True, frozen=True)
 class AreaGeometry:
@@ -83,7 +64,7 @@ class AreaGeometry:
 
 
 @dataclass(slots=True, frozen=True)
-class TrackedArea:
+class TrackedArea(_MunicipalityLabels):
     """Municipality being tracked, with status and optional marker."""
 
     area_id: str
@@ -102,40 +83,3 @@ class TrackedArea:
     snippet_path: str | None
     marker_lat: float | None
     marker_lon: float | None
-
-    @property
-    def type_label(self) -> str:
-        """Human label for the area type."""
-        return AREA_TYPE_LABELS.get(self.area_type, self.area_type)
-
-    @property
-    def context_label(self) -> str | None:
-        """State shown next to the name, if any."""
-        if self.area_type == "municipio":
-            return self.state_code
-        return None
-
-    @property
-    def display_name(self) -> str:
-        """Name with state, as shown in the UI."""
-        if self.context_label:
-            return f"{self.name} - {self.context_label}"
-        return self.name
-
-    @property
-    def code_label(self) -> str:
-        """IBGE code label."""
-        if self.area_type == "municipio":
-            return f"IBGE {self.area_code}"
-        return f"Código {self.area_code}"
-
-
-@dataclass(slots=True, frozen=True)
-class RenderedArea:
-    """Result of rendering one municipality."""
-
-    area: AreaCatalogEntry
-    png_paths: list[Path]
-    media_path: Path
-    snippet_path: Path
-    latest_source_timestamp: str

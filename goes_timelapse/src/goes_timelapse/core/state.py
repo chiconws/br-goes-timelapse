@@ -257,7 +257,6 @@ class StateStore:
         last_error: str | None = None,
         latest_source_timestamp: str | None = None,
         media_path: str | None = None,
-        snippet_path: str | None = None,
     ) -> None:
         """Update the status, message and outputs of a tracked municipality."""
         updates = {
@@ -269,8 +268,6 @@ class StateStore:
             updates["latest_source_timestamp"] = latest_source_timestamp
         if media_path is not None:
             updates["media_path"] = media_path
-        if snippet_path is not None:
-            updates["snippet_path"] = snippet_path
         assignments = ", ".join(f"{column} = :{column}" for column in updates)
         updates["area_id"] = area_id
 

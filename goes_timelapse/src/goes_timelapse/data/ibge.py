@@ -10,10 +10,7 @@ from urllib.parse import quote
 import urllib.request
 
 from goes_timelapse.core.models import AreaCatalogEntry, AreaGeometry
-
-MALHAS_SEGMENTS = {
-    "municipio": "municipios",
-}
+from goes_timelapse.data.catalog import parse_bounds
 
 
 class IbgeGeometryStore:
@@ -38,10 +35,9 @@ class IbgeGeometryStore:
 
     def fetch_geometry(self, area: AreaCatalogEntry) -> AreaGeometry:
         """Download the outline from IBGE and cache it."""
-        segment = MALHAS_SEGMENTS[area.area_type]
         encoded_code = quote(area.area_code, safe="")
         url = (
-            f"{self._base_url}/{segment}/{encoded_code}"
+            f"{self._base_url}/municipios/{encoded_code}"
             "?formato=application%2Fvnd.geo%2Bjson"
         )
         payload = _load_json_url(url, timeout_seconds=self._timeout_seconds)
@@ -58,7 +54,7 @@ class IbgeGeometryStore:
         return AreaGeometry(
             area_id=str(payload["area_id"]),
             centroid=(float(payload["centroid"][0]), float(payload["centroid"][1])),
-            bounds=_coerce_bounds(payload["bounds"]),
+            bounds=parse_bounds(payload["bounds"]),
             polygon=tuple((float(lon), float(lat)) for lon, lat in payload["polygon"]),
         )
 
@@ -126,18 +122,6 @@ def _geometry_from_geojson(area_id: str, payload: object) -> AreaGeometry:
     )
 
 
-def _coerce_bounds(raw_bounds: object) -> tuple[float, float, float, float]:
-    if not isinstance(raw_bounds, list | tuple) or len(raw_bounds) != 4:
-        raise ValueError("Invalid geometry bounds payload")
-    left, bottom, right, top = raw_bounds
-    return (
-        _coerce_float(left),
-        _coerce_float(bottom),
-        _coerce_float(right),
-        _coerce_float(top),
-    )
-
-
 def _rounded_bounds(
     bounds: tuple[float, float, float, float],
 ) -> tuple[float, float, float, float]:
@@ -147,12 +131,6 @@ def _rounded_bounds(
         round(float(bounds[2]), 6),
         round(float(bounds[3]), 6),
     )
-
-
-def _coerce_float(value: object) -> float:
-    if not isinstance(value, int | float | str):
-        raise ValueError("Invalid geometry coordinate")  # noqa: TRY004 - malformed payload is a ValueError
-    return float(value)
 
 
 def _extract_exterior_rings(

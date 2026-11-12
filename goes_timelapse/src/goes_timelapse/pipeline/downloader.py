@@ -11,13 +11,14 @@ from pathlib import Path
 import re
 import socket
 from time import perf_counter
-from typing import Any, Protocol
+from typing import Any
 from urllib.parse import quote
 import xml.etree.ElementTree as ET
 
 import aiohttp
 from typing_extensions import TypedDict
 
+from goes_timelapse import __version__
 from goes_timelapse.core.logging_utils import get_logger
 from goes_timelapse.pipeline.partial_read import (
     GLM_LAT_NODE,
@@ -33,14 +34,15 @@ from goes_timelapse.pipeline.partial_read import (
     valid_flash_points,
     write_abi_crop,
 )
+from goes_timelapse.timeline import (
+    SLOT_MINUTES,
+    datetime_to_slot_timestamp,
+    floor_to_slot,
+)
 
 LOGGER = get_logger(__name__)
-NODD_PRODUCT_PREFIX = "ABI-L1b-RadF"
-NODD_LISTING_PREFIX_TEMPLATE = (
-    "{product}/{year}/{julian_day}/{hour}/OR_{product}-{band}_G19_"
-)
-GLM_PRODUCT_PREFIX = "GLM-L2-LCFA"
-GLM_LISTING_PREFIX_TEMPLATE = "{product}/{year}/{julian_day}/{hour}/OR_{product}_G19_"
+ABI_PRODUCT = "ABI-L1b-RadF"
+GLM_PRODUCT = "GLM-L2-LCFA"
 DOWNLOAD_RETRY_ATTEMPTS = 5
 DOWNLOAD_CONCURRENCY = 2
 GLM_CONCURRENCY = 8
@@ -48,7 +50,7 @@ GLM_LAYOUT_CHECK_SECONDS = 3600
 LOOKBACK_HOURS = 4
 REQUEST_HEADERS = {
     "Accept-Encoding": "identity",
-    "User-Agent": "br-goes-timelapse/1.2.0",
+    "User-Agent": f"br-goes-timelapse/{__version__}",
 }
 LISTING_TIMEOUT = aiohttp.ClientTimeout(
     total=45, connect=15, sock_connect=15, sock_read=20
@@ -71,15 +73,6 @@ DOWNLOAD_RETRYABLE_ERRORS = (
 S3_XML_NAMESPACE = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
 
 
-class SessionLike(Protocol):
-    """Minimal aiohttp session interface used by the downloaders."""
-
-    @property
-    def get(self) -> Callable[..., Any]:
-        """Start a GET request."""
-        ...
-
-
 class GlmSlotRecord(TypedDict):
     """Flashes aggregated for one GLM slot."""
 
@@ -96,8 +89,6 @@ class DownloadReport:
     downloaded_count: int
     attempted_count: int
     failed_count: int
-    last_downloaded: str | None
-    latest_available: str | None
     failed_files: list[str] = field(default_factory=list)
     bytes_read: int = 0
     requests: int = 0
@@ -115,68 +106,127 @@ class AreaCrop:
     target_timestamps: tuple[str, ...]
 
 
-class GoesDownloader:
+class _NoaaDownloader:
+    """S3 listing and progress shared by the ABI and GLM downloaders."""
+
+    def __init__(
+        self,
+        base_url: str,
+        raw_dir: Path,
+        *,
+        product: str,
+        name_prefix: str,
+        progress_callback: Callable[[dict[str, object]], None] | None,
+    ):
+        self._base_url = base_url.rstrip("/") + "/"
+        self._raw_dir = raw_dir
+        self._product = product
+        self._name_prefix = name_prefix
+        self._key_pattern = re.compile(
+            rf"(?P<key>{re.escape(product)}/\d{{4}}/\d{{3}}/\d{{2}}/"
+            rf"{re.escape(name_prefix)}"
+            rf"s(?P<timestamp>\d{{13,14}})_e\d{{13,14}}_c\d{{13,14}}\.nc)"
+        )
+        self._progress_callback = progress_callback
+        self._raw_dir.mkdir(parents=True, exist_ok=True)
+
+    def parse_listing(self, xml_payload: str) -> list[str]:
+        """Return the product file names in an S3 listing, newest first."""
+        root = ET.fromstring(xml_payload)  # noqa: S314 - NOAA S3 listing fetched over HTTPS
+        keys: set[tuple[str, str]] = set()
+        for node in root.findall("s3:Contents", S3_XML_NAMESPACE):
+            key_node = node.find("s3:Key", S3_XML_NAMESPACE)
+            if key_node is None or not key_node.text:
+                continue
+            match = self._key_pattern.fullmatch(key_node.text)
+            if match is not None:
+                keys.add((match.group("timestamp"), Path(match.group("key")).name))
+        return [filename for _, filename in sorted(keys, reverse=True)]
+
+    async def _fetch_listing(
+        self,
+        session: aiohttp.ClientSession,
+        missing_slots: tuple[str, ...] = (),
+    ) -> list[str]:
+        collected: set[str] = set()
+        last_error: Exception | None = None
+        for hour in _listing_hours(missing_slots):
+            prefix = f"{self._product}/{hour:%Y/%j/%H}/{self._name_prefix}"
+            url = f"{self._base_url}?prefix={quote(prefix, safe='/')}&max-keys=1000"
+            LOGGER.trace("Fetching listing prefix: %s", url)
+            for attempt in range(1, DOWNLOAD_RETRY_ATTEMPTS + 1):
+                try:
+                    async with session.get(url, timeout=LISTING_TIMEOUT) as response:
+                        _raise_for_response(response)
+                        payload = await response.text()
+                    collected.update(self.parse_listing(payload))
+                    break
+                except DOWNLOAD_RETRYABLE_ERRORS as err:
+                    last_error = err
+                    if attempt >= DOWNLOAD_RETRY_ATTEMPTS:
+                        LOGGER.warning(
+                            "Skipping listing prefix after repeated failures %s: %s",
+                            url,
+                            err,
+                        )
+                        break
+                    LOGGER.warning(
+                        "Transient failure fetching listing from %s (attempt %s/%s): %s",
+                        url,
+                        attempt,
+                        DOWNLOAD_RETRY_ATTEMPTS,
+                        err,
+                    )
+                    await asyncio.sleep(attempt)
+
+        if not collected and last_error is not None:
+            raise last_error
+        return sorted(collected, key=_filename_timestamp_or_min, reverse=True)
+
+    def _source_key_for_filename(self, filename: str) -> str:
+        moment = _filename_timestamp(filename)
+        if moment is None:
+            raise ValueError(f"Cannot derive source key for {filename}")
+        return f"{self._product}/{moment:%Y/%j/%H}/{filename}"
+
+    def _emit_progress(self, **payload: object) -> None:
+        if self._progress_callback is not None:
+            self._progress_callback(payload)
+
+
+class GoesDownloader(_NoaaDownloader):
     """Read the rows of ABI C02/C13 that cover each municipality."""
 
     def __init__(
         self,
         base_url: str,
         raw_dir: Path,
-        raw_history: int,
         *,
         band: str = "C02",
         progress_callback: Callable[[dict[str, object]], None] | None = None,
     ):
-        """Configure the product, cache directory and limits."""
-        self._base_url = base_url.rstrip("/") + "/"
-        self._raw_dir = raw_dir
-        self._raw_history = raw_history
-        self._band = band
-        self._band_token = f"M6{band}"
-        self._key_pattern = re.compile(
-            rf"(?P<key>{re.escape(NODD_PRODUCT_PREFIX)}/\d{{4}}/\d{{3}}/\d{{2}}/"
-            rf"OR_{re.escape(NODD_PRODUCT_PREFIX)}-{re.escape(self._band_token)}_G19_"
-            rf"s(?P<timestamp>\d{{13,14}})_e\d{{13,14}}_c\d{{13,14}}\.nc)"
+        """Configure the band and cache directory."""
+        super().__init__(
+            base_url,
+            raw_dir,
+            product=ABI_PRODUCT,
+            name_prefix=f"OR_{ABI_PRODUCT}-M6{band}_G19_",
+            progress_callback=progress_callback,
         )
-        self._progress_callback = progress_callback
-        self._raw_dir.mkdir(parents=True, exist_ok=True)
+        self._band = band
 
     def output_filename(self, source_filename: str) -> str:
         """Return the cached file name for a NOAA file name."""
         return f"{Path(source_filename).stem}.tif"
 
-    def source_filename(self, output_filename: str) -> str:
-        """Return the NOAA file name for a cached file name."""
-        return f"{Path(output_filename).stem}.nc"
-
-    def parse_listing(self, xml_payload: str) -> list[str]:
-        """Return the product file names in an S3 listing."""
-        root = ET.fromstring(xml_payload)  # noqa: S314 - NOAA S3 listing fetched over HTTPS
-        keys: list[tuple[str, str]] = []
-        for node in root.findall("s3:Contents", S3_XML_NAMESPACE):
-            key_node = node.find("s3:Key", S3_XML_NAMESPACE)
-            if key_node is None or not key_node.text:
-                continue
-            match = self._key_pattern.fullmatch(key_node.text)
-            if match is None:
-                continue
-            keys.append((match.group("timestamp"), Path(match.group("key")).name))
-
-        keys = sorted(set(keys), key=lambda item: item[0], reverse=True)
-        return [filename for _, filename in keys]
-
     async def refresh_latest(
         self,
         *,
-        download_missing: bool = True,
-        target_timestamps: tuple[str, ...] | None = None,
+        target_timestamps: tuple[str, ...],
         areas: tuple[AreaCrop, ...] = (),
     ) -> DownloadReport:
         """Fetch the missing slots for every crop."""
         started_at = perf_counter()
-        connector = aiohttp.TCPConnector(
-            limit=DOWNLOAD_CONCURRENCY, family=socket.AF_INET
-        )
         slots_on_disk = {
             area.area_id: self._slots_on_disk(area.area_id) for area in areas
         }
@@ -190,7 +240,9 @@ class GoesDownloader:
         )
         async with aiohttp.ClientSession(
             timeout=LISTING_TIMEOUT,
-            connector=connector,
+            connector=aiohttp.TCPConnector(
+                limit=DOWNLOAD_CONCURRENCY, family=socket.AF_INET
+            ),
             headers=REQUEST_HEADERS,
         ) as session:
             try:
@@ -206,85 +258,40 @@ class GoesDownloader:
                 )
         listing_seconds = perf_counter() - started_at
 
-        candidate_sources = self._candidate_source_filenames(
-            source_filenames,
-            target_timestamps=target_timestamps,
-        )
-        candidate_outputs = [
-            self.output_filename(filename) for filename in candidate_sources
-        ]
-        latest_available = self._latest_available_output(
-            source_filenames,
-            target_timestamps=target_timestamps,
-        )
-        LOGGER.trace(
-            "Imagery refresh plan for %s: targets=%s candidates=%s latest_available=%s",
-            self._band,
-            target_timestamps,
-            candidate_outputs,
-            latest_available,
-        )
+        target_set = set(target_timestamps)
         reads = [
-            (source_filename, area)
-            for source_filename in candidate_sources
+            (filename, area)
+            for filename in source_filenames
+            if (slot := _slot_of(filename)) in target_set
             for area in areas
-            if (
-                slot := _slot_timestamp_for_output_filename(
-                    self.output_filename(source_filename)
-                )
-            )
-            in area.target_timestamps
+            if slot in area.target_timestamps
             and slot not in slots_on_disk[area.area_id]
         ]
-        attempted_count = len(reads)
+        LOGGER.trace("Imagery reads for %s: %s", self._band, reads)
         self._emit_progress(
-            phase="downloading" if download_missing and reads else "idle",
-            attempted_count=attempted_count,
+            phase="downloading" if reads else "idle",
+            attempted_count=len(reads),
             completed_count=0,
             failed_count=0,
             active_count=0,
-            latest_available=latest_available,
-            current_file=None,
-            last_downloaded=None,
+            active_downloads=[],
         )
-        if not download_missing:
-            return DownloadReport(
-                kept_files=self._kept_raws_on_disk(),
-                downloaded_count=0,
-                attempted_count=0,
-                failed_count=0,
-                last_downloaded=None,
-                latest_available=latest_available,
-                failed_files=[],
-            )
 
         failed_files: list[str] = []
         downloaded_count = 0
         bytes_read = 0
         requests = 0
         retries = 0
-        last_downloaded: str | None = None
         # ponytail: one file at a time, each with its own connections; add file-level concurrency if backfill is too slow.
         for completed_count, (source_filename, area) in enumerate(reads):
             output_filename = f"{area.area_id}/{self.output_filename(source_filename)}"
             self._emit_progress(
                 phase="downloading",
-                attempted_count=attempted_count,
+                attempted_count=len(reads),
                 completed_count=completed_count,
                 failed_count=len(failed_files),
                 active_count=1,
-                latest_available=latest_available,
-                current_file=output_filename,
-                last_downloaded=last_downloaded,
-                active_downloads=[
-                    {
-                        "filename": output_filename,
-                        "downloaded_bytes": 0,
-                        "total_bytes": None,
-                        "percent": None,
-                        "stage": "downloading",
-                    }
-                ],
+                active_downloads=[{"filename": output_filename}],
             )
             try:
                 stats = await asyncio.to_thread(self._read_crop, source_filename, area)
@@ -297,15 +304,16 @@ class GoesDownloader:
             bytes_read += stats.bytes_read
             requests += stats.requests
             retries += stats.retries
-            last_downloaded = output_filename
 
         return DownloadReport(
-            kept_files=self._kept_raws_on_disk(),
+            kept_files=sorted(
+                self._raw_dir.rglob("*.tif"),
+                key=lambda path: _filename_timestamp_or_min(path.name),
+                reverse=True,
+            ),
             downloaded_count=downloaded_count,
-            attempted_count=attempted_count,
+            attempted_count=len(reads),
             failed_count=len(failed_files),
-            last_downloaded=last_downloaded,
-            latest_available=latest_available,
             failed_files=failed_files,
             bytes_read=bytes_read,
             requests=requests,
@@ -328,7 +336,7 @@ class GoesDownloader:
             "write_s=%.2f total_s=%.2f mb_per_s=%.2f",
             area.area_id,
             self._band,
-            _slot_timestamp_for_output_filename(filename),
+            _slot_of(filename),
             stats.bytes_read,
             stats.requests,
             stats.retries,
@@ -345,439 +353,134 @@ class GoesDownloader:
 
     def _slots_on_disk(self, area_id: str) -> set[str | None]:
         return {
-            _slot_timestamp_for_output_filename(path.name)
+            _slot_of(path.name)
             for path in (self._raw_dir / area_id).glob("*.tif")
             if path.stat().st_size > 0
         }
 
-    async def _fetch_listing(
-        self,
-        session: SessionLike,
-        missing_slots: tuple[str, ...] = (),
-    ) -> list[str]:
-        collected: set[str] = set()
-        last_error: Exception | None = None
-        for prefix in self._listing_prefixes(missing_slots):
-            encoded_prefix = quote(prefix, safe="/")
-            url = f"{self._base_url}?prefix={encoded_prefix}&max-keys=1000"
-            LOGGER.trace("Fetching imagery listing prefix for %s: %s", self._band, url)
-            for attempt in range(1, DOWNLOAD_RETRY_ATTEMPTS + 1):
-                try:
-                    async with session.get(url, timeout=LISTING_TIMEOUT) as response:
-                        _raise_for_response(response)
-                        payload = await response.text()
-                    parsed = self.parse_listing(payload)
-                    LOGGER.trace(
-                        "Fetched imagery listing prefix for %s: %s file(s)",
-                        self._band,
-                        len(parsed),
-                    )
-                    collected.update(parsed)
-                    break
-                except DOWNLOAD_RETRYABLE_ERRORS as err:
-                    last_error = err
-                    if attempt >= DOWNLOAD_RETRY_ATTEMPTS:
-                        LOGGER.warning(
-                            "Skipping listing prefix after repeated failures %s: %s",
-                            url,
-                            err,
-                        )
-                        break
-                    LOGGER.warning(
-                        "Transient failure fetching listing from %s (attempt %s/%s): %s",
-                        url,
-                        attempt,
-                        DOWNLOAD_RETRY_ATTEMPTS,
-                        err,
-                    )
-                    await asyncio.sleep(attempt)
-
-        if collected:
-            return sorted(collected, key=_filename_timestamp_or_min, reverse=True)
-        if last_error is not None:
-            raise last_error
-        return sorted(collected, key=_filename_timestamp_or_min, reverse=True)
-
-    def _emit_progress(self, **payload: object) -> None:
-        if self._progress_callback is None:
-            return
-        self._progress_callback(payload)
-
-    def _candidate_source_filenames(
-        self,
-        source_filenames: list[str],
-        *,
-        target_timestamps: tuple[str, ...] | None,
-    ) -> list[str]:
-        if target_timestamps is None:
-            selected = source_filenames[: self._raw_history]
-            LOGGER.trace(
-                "Selected imagery candidates for %s without explicit targets: %s",
-                self._band,
-                [self.output_filename(filename) for filename in selected],
-            )
-            return selected
-        target_set = set(target_timestamps)
-        selected = [
-            filename
-            for filename in source_filenames
-            if _slot_timestamp_for_output_filename(self.output_filename(filename))
-            in target_set
-        ]
-        LOGGER.trace(
-            "Selected imagery candidates for %s with targets=%s: %s",
-            self._band,
-            target_timestamps,
-            [self.output_filename(filename) for filename in selected],
-        )
-        return selected
-
-    def _latest_available_output(
-        self,
-        source_filenames: list[str],
-        *,
-        target_timestamps: tuple[str, ...] | None,
-    ) -> str | None:
-        if target_timestamps is None:
-            return (
-                self.output_filename(source_filenames[0]) if source_filenames else None
-            )
-        target_set = set(target_timestamps)
-        for filename in source_filenames:
-            output_filename = self.output_filename(filename)
-            if _slot_timestamp_for_output_filename(output_filename) in target_set:
-                return output_filename
-        return None
-
     def _cached_source_filenames_from_disk(self) -> list[str]:
         return sorted(
-            {self.source_filename(path.name) for path in self._raw_dir.rglob("*.tif")},
+            {f"{path.stem}.nc" for path in self._raw_dir.rglob("*.tif")},
             key=_filename_timestamp_or_min,
             reverse=True,
         )
 
-    def _kept_raws_on_disk(self) -> list[Path]:
-        return sorted(
-            self._raw_dir.rglob("*.tif"),
-            key=lambda path: _filename_timestamp_or_min(path.name),
-            reverse=True,
-        )
 
-    def _listing_prefixes(self, missing_slots: tuple[str, ...] = ()) -> list[str]:
-        return [
-            NODD_LISTING_PREFIX_TEMPLATE.format(
-                product=NODD_PRODUCT_PREFIX,
-                band=self._band_token,
-                year=hour.strftime("%Y"),
-                julian_day=hour.strftime("%j"),
-                hour=hour.strftime("%H"),
-            )
-            for hour in _listing_hours(missing_slots)
-        ]
-
-    @staticmethod
-    def _source_key_for_filename(filename: str) -> str:
-        match = _filename_timestamp(filename)
-        if match is None:
-            raise ValueError(f"Cannot derive source key for {filename}")
-        source_time = match.strftime("%Y/%j/%H")
-        return f"{NODD_PRODUCT_PREFIX}/{source_time}/{filename}"
-
-
-class GlmDownloader:
+class GlmDownloader(_NoaaDownloader):
     """Read GLM flash coordinates and aggregate them per slot."""
 
     def __init__(
         self,
         base_url: str,
         raw_dir: Path,
-        raw_history: int,
         *,
         progress_callback: Callable[[dict[str, object]], None] | None = None,
     ):
-        """Configure the cache directory and limits."""
-        self._base_url = base_url.rstrip("/") + "/"
-        self._raw_dir = raw_dir
-        self._raw_history = raw_history
-        self._progress_callback = progress_callback
+        """Configure the cache directory."""
+        super().__init__(
+            base_url,
+            raw_dir,
+            product=GLM_PRODUCT,
+            name_prefix=f"OR_{GLM_PRODUCT}_G19_",
+            progress_callback=progress_callback,
+        )
         self._bytes_read = 0
         self._requests = 0
         self._retries = 0
         self._layout_checked_at = float("-inf")
-        self._key_pattern = re.compile(
-            rf"(?P<key>{re.escape(GLM_PRODUCT_PREFIX)}/\d{{4}}/\d{{3}}/\d{{2}}/"
-            rf"OR_{re.escape(GLM_PRODUCT_PREFIX)}_G19_"
-            rf"s(?P<timestamp>\d{{13,14}})_e\d{{13,14}}_c\d{{13,14}}\.nc)"
-        )
-        self._raw_dir.mkdir(parents=True, exist_ok=True)
-
-    def output_filename(self, source_filename: str) -> str:
-        """Return the cached slot file name for a NOAA file name."""
-        slot_timestamp = self._slot_timestamp_for_source(source_filename)
-        if slot_timestamp is None:
-            raise ValueError(f"Cannot derive GLM slot for {source_filename}")
-        return f"{slot_timestamp}_glm.json"
-
-    def parse_listing(self, xml_payload: str) -> list[str]:
-        """Return the GLM file names in an S3 listing."""
-        root = ET.fromstring(xml_payload)  # noqa: S314 - NOAA S3 listing fetched over HTTPS
-        keys: list[tuple[str, str]] = []
-        for node in root.findall("s3:Contents", S3_XML_NAMESPACE):
-            key_node = node.find("s3:Key", S3_XML_NAMESPACE)
-            if key_node is None or not key_node.text:
-                continue
-            match = self._key_pattern.fullmatch(key_node.text)
-            if match is None:
-                continue
-            keys.append((match.group("timestamp"), Path(match.group("key")).name))
-
-        keys = sorted(set(keys), key=lambda item: item[0], reverse=True)
-        return [filename for _, filename in keys]
 
     async def refresh_latest(
-        self,
-        *,
-        download_missing: bool = True,
-        target_timestamps: tuple[str, ...] | None = None,
+        self, *, target_timestamps: tuple[str, ...]
     ) -> DownloadReport:
         """Fetch and aggregate flashes for the missing slots."""
         started_at = perf_counter()
-        connector = aiohttp.TCPConnector(limit=GLM_CONCURRENCY, family=socket.AF_INET)
         self._bytes_read = 0
         self._requests = 0
         self._retries = 0
         missing_slots = tuple(
-            slot
-            for slot in target_timestamps or ()
-            if not (self._raw_dir / f"{slot}_glm.json").exists()
+            slot for slot in target_timestamps if not self._slot_path(slot).exists()
         )
         async with aiohttp.ClientSession(
             timeout=DOWNLOAD_TIMEOUT,
-            connector=connector,
+            connector=aiohttp.TCPConnector(
+                limit=GLM_CONCURRENCY, family=socket.AF_INET
+            ),
             headers=REQUEST_HEADERS,
         ) as session:
             source_filenames = await self._fetch_listing(session, missing_slots)
             listing_seconds = perf_counter() - started_at
-            candidate_sources, latest_slot_output = self._candidate_source_filenames(
-                source_filenames,
-                target_timestamps=target_timestamps,
+            candidates = self._candidate_source_filenames(
+                source_filenames, set(target_timestamps)
             )
-            LOGGER.trace(
-                "GLM refresh plan: targets=%s candidates=%s latest_available=%s",
-                target_timestamps,
-                candidate_sources,
-                latest_slot_output,
-            )
+            LOGGER.trace("GLM candidates for %s: %s", target_timestamps, candidates)
             self._emit_progress(
-                phase="downloading"
-                if download_missing and candidate_sources
-                else "idle",
-                attempted_count=len(candidate_sources),
+                phase="downloading" if candidates else "idle",
+                attempted_count=len(candidates),
                 completed_count=0,
                 failed_count=0,
                 active_count=0,
-                latest_available=latest_slot_output,
-                current_file=None,
-                last_downloaded=None,
+                active_downloads=[],
             )
-
-            if not download_missing:
-                kept_files = self._kept_raws_on_disk()
-                return DownloadReport(
-                    kept_files=kept_files,
-                    downloaded_count=0,
-                    attempted_count=0,
-                    failed_count=0,
-                    last_downloaded=None,
-                    latest_available=latest_slot_output,
-                    failed_files=[],
-                )
-
-            if candidate_sources and not await self._layout_verified(
-                session, candidate_sources[0]
-            ):
+            if candidates and not await self._layout_verified(session, candidates[0]):
                 return DownloadReport(
                     kept_files=self._kept_raws_on_disk(),
                     downloaded_count=0,
-                    attempted_count=len(candidate_sources),
-                    failed_count=len(candidate_sources),
-                    last_downloaded=None,
-                    latest_available=latest_slot_output,
-                    failed_files=candidate_sources,
+                    attempted_count=len(candidates),
+                    failed_count=len(candidates),
+                    failed_files=candidates,
                 )
 
-            download_semaphore = asyncio.Semaphore(GLM_CONCURRENCY)
-            completed_count = 0
+            semaphore = asyncio.Semaphore(GLM_CONCURRENCY)
             failed_files: list[str] = []
-            last_downloaded: str | None = None
-            active_downloads: dict[str, dict[str, object]] = {}
-            progress_lock = asyncio.Lock()
-            ready_for_conversion: dict[
-                int, tuple[str, str, list[dict[str, float]] | None]
-            ] = {}
-            ready_for_conversion_event = asyncio.Event()
+            completed_count = 0
+            in_flight: list[str] = []
 
-            def current_phase() -> str:
-                if any(
-                    str(item.get("stage")) == "downloading"
-                    for item in active_downloads.values()
-                ):
-                    return "downloading"
-                if active_downloads:
-                    return "processing"
-                if completed_count < len(candidate_sources):
-                    return "downloading"
-                return "idle"
-
-            async def upsert_active_download(
-                *,
-                filename: str,
-                stage: str,
-                downloaded_bytes: int | None = None,
-                total_bytes: int | None = None,
-                percent: float | None = None,
-            ) -> None:
-                async with progress_lock:
-                    item = active_downloads.get(filename)
-                    if item is None:
-                        item = {
-                            "filename": filename,
-                            "downloaded_bytes": 0,
-                            "total_bytes": None,
-                            "percent": None,
-                            "stage": stage,
-                        }
-                        active_downloads[filename] = item
-                    else:
-                        item["stage"] = stage
-                    if downloaded_bytes is not None:
-                        item["downloaded_bytes"] = downloaded_bytes
-                    if total_bytes is not None or stage == "downloading":
-                        item["total_bytes"] = total_bytes
-                    if percent is not None:
-                        item["percent"] = percent
-                    self._emit_progress(
-                        phase=current_phase(),
-                        attempted_count=len(candidate_sources),
-                        completed_count=completed_count,
-                        failed_count=len(failed_files),
-                        active_count=len(active_downloads),
-                        latest_available=latest_slot_output,
-                        current_file=filename,
-                        last_downloaded=last_downloaded,
-                        active_downloads=sorted(
-                            active_downloads.values(),
-                            key=lambda item: str(item["filename"]),
-                        ),
-                    )
-
-            async def complete_active_download(
-                *,
-                filename: str,
-                last_downloaded_name: str | None = None,
-            ) -> None:
-                nonlocal completed_count, last_downloaded
-                async with progress_lock:
-                    completed_count += 1
-                    active_downloads.pop(filename, None)
-                    if last_downloaded_name:
-                        last_downloaded = last_downloaded_name
-                    self._emit_progress(
-                        phase=current_phase(),
-                        attempted_count=len(candidate_sources),
-                        completed_count=completed_count,
-                        failed_count=len(failed_files),
-                        active_count=len(active_downloads),
-                        latest_available=latest_slot_output,
-                        current_file=filename,
-                        last_downloaded=last_downloaded,
-                        active_downloads=sorted(
-                            active_downloads.values(),
-                            key=lambda item: str(item["filename"]),
-                        ),
-                    )
-
-            async def _mark_ready_for_conversion(
-                source_index: int,
-                source_filename: str,
-                slot_output: str,
-                flashes: list[dict[str, float]] | None,
-            ) -> None:
-                ready_for_conversion[source_index] = (
-                    source_filename,
-                    slot_output,
-                    flashes,
+            def emit() -> None:
+                self._emit_progress(
+                    phase="downloading",
+                    attempted_count=len(candidates),
+                    completed_count=completed_count,
+                    failed_count=len(failed_files),
+                    active_count=len(in_flight),
+                    active_downloads=[{"filename": name} for name in in_flight],
                 )
-                ready_for_conversion_event.set()
 
-            async def download(source_index: int, filename: str) -> None:
-                slot_output = self.output_filename(filename)
-                await upsert_active_download(filename=filename, stage="downloading")
+            async def read(filename: str) -> list[dict[str, float]] | None:
+                nonlocal completed_count
                 try:
-                    async with download_semaphore:
-                        flashes = await self._read_flash_columns(
-                            session,
-                            self._source_key_for_filename(filename),
+                    async with semaphore:
+                        in_flight.append(filename)
+                        emit()
+                        return await self._read_flash_columns(
+                            session, self._source_key_for_filename(filename)
                         )
-
-                    await upsert_active_download(filename=filename, stage="queued")
-                    await _mark_ready_for_conversion(
-                        source_index,
-                        filename,
-                        slot_output,
-                        flashes,
-                    )
                 except Exception as err:  # noqa: BLE001 - one bad file must not stop the cycle
                     failed_files.append(filename)
                     LOGGER.warning("Failed to download %s: %s", filename, err)
-                    await complete_active_download(filename=filename)
-                    await _mark_ready_for_conversion(
-                        source_index,
-                        filename,
-                        slot_output,
-                        None,
-                    )
+                    return None
+                finally:
+                    if filename in in_flight:
+                        in_flight.remove(filename)
+                    completed_count += 1
+                    emit()
 
-            download_tasks = [
-                asyncio.create_task(download(index, name))
-                for index, name in enumerate(candidate_sources)
-            ]
+            results = await asyncio.gather(*(read(name) for name in candidates))
 
-            downloaded_count = 0
-            for index in range(len(candidate_sources)):
-                while index not in ready_for_conversion:
-                    await ready_for_conversion_event.wait()
-                    ready_for_conversion_event.clear()
+        downloaded_count = 0
+        for filename, flashes in zip(candidates, results, strict=True):
+            if flashes is None:
+                continue
+            try:
+                downloaded_count += self._merge_flashes_into_slot(filename, flashes)
+            except Exception as err:  # noqa: BLE001 - one bad file must not stop the cycle
+                failed_files.append(filename)
+                LOGGER.warning("Failed to convert %s: %s", filename, err)
 
-                source_filename, slot_output, flashes = ready_for_conversion.pop(index)
-                if flashes is None:
-                    continue
-
-                await upsert_active_download(
-                    filename=source_filename, stage="converting"
-                )
-                try:
-                    processed = self._merge_flashes_into_slot(source_filename, flashes)
-                    downloaded_count += processed
-                    await complete_active_download(
-                        filename=source_filename,
-                        last_downloaded_name=slot_output if processed else None,
-                    )
-                except Exception as err:  # noqa: BLE001 - one bad file must not stop the cycle
-                    failed_files.append(source_filename)
-                    LOGGER.warning("Failed to convert %s: %s", source_filename, err)
-                    await complete_active_download(filename=source_filename)
-
-            await asyncio.gather(*download_tasks)
-
-        kept_files = self._kept_raws_on_disk()
         return DownloadReport(
-            kept_files=kept_files,
+            kept_files=self._kept_raws_on_disk(),
             downloaded_count=downloaded_count,
-            attempted_count=len(candidate_sources),
+            attempted_count=len(candidates),
             failed_count=len(failed_files),
-            last_downloaded=last_downloaded,
-            latest_available=latest_slot_output,
             failed_files=failed_files,
             bytes_read=self._bytes_read,
             requests=self._requests,
@@ -786,7 +489,9 @@ class GlmDownloader:
             elapsed_seconds=perf_counter() - started_at,
         )
 
-    async def _layout_verified(self, session: SessionLike, filename: str) -> bool:
+    async def _layout_verified(
+        self, session: aiohttp.ClientSession, filename: str
+    ) -> bool:
         """False stops GLM until the check passes, since a moved node yields valid-looking flashes."""
         if perf_counter() - self._layout_checked_at < GLM_LAYOUT_CHECK_SECONDS:
             return True
@@ -811,7 +516,7 @@ class GlmDownloader:
 
     async def _read_flash_columns(
         self,
-        session: SessionLike,
+        session: aiohttp.ClientSession,
         source_key: str,
     ) -> list[dict[str, float]]:
         latitude_chunks = parse_glm_node(
@@ -835,7 +540,7 @@ class GlmDownloader:
 
     async def _get_range(
         self,
-        session: SessionLike,
+        session: aiohttp.ClientSession,
         source_key: str,
         start: int,
         end: int,
@@ -850,12 +555,10 @@ class GlmDownloader:
                 ) as response:
                     _raise_for_response(response)
                     if response.status != 206:
-                        raise ValueError(f"Range ignorado: HTTP {response.status}")
+                        raise ValueError(f"Range not honored: HTTP {response.status}")
                     data: bytes = await response.read()
                 if len(data) != end - start:
-                    raise ValueError(
-                        f"Leitura curta: {len(data)} de {end - start} bytes"
-                    )
+                    raise ValueError(f"Short read: {len(data)} of {end - start} bytes")
                 self._bytes_read += len(data)
                 self._requests += 1
                 return data  # noqa: TRY300 - return inside the retry loop
@@ -866,91 +569,59 @@ class GlmDownloader:
                 await asyncio.sleep(attempt)
         raise AssertionError("unreachable")
 
-    async def _fetch_listing(
-        self,
-        session: SessionLike,
-        missing_slots: tuple[str, ...] = (),
+    def _candidate_source_filenames(
+        self, source_filenames: list[str], target_slots: set[str]
     ) -> list[str]:
-        collected: set[str] = set()
-        last_error: Exception | None = None
-        for prefix in self._listing_prefixes(missing_slots):
-            encoded_prefix = quote(prefix, safe="/")
-            url = f"{self._base_url}?prefix={encoded_prefix}&max-keys=1000"
-            LOGGER.trace("Fetching GLM listing prefix: %s", url)
-            for attempt in range(1, DOWNLOAD_RETRY_ATTEMPTS + 1):
-                try:
-                    async with session.get(url, timeout=LISTING_TIMEOUT) as response:
-                        _raise_for_response(response)
-                        payload = await response.text()
-                    parsed = self.parse_listing(payload)
-                    LOGGER.trace(
-                        "Fetched GLM listing prefix with %s file(s)", len(parsed)
-                    )
-                    collected.update(parsed)
-                    break
-                except DOWNLOAD_RETRYABLE_ERRORS as err:
-                    last_error = err
-                    if attempt >= DOWNLOAD_RETRY_ATTEMPTS:
-                        LOGGER.warning(
-                            "Skipping listing prefix after repeated failures %s: %s",
-                            url,
-                            err,
-                        )
-                        break
-                    LOGGER.warning(
-                        "Transient failure fetching listing from %s (attempt %s/%s): %s",
-                        url,
-                        attempt,
-                        DOWNLOAD_RETRY_ATTEMPTS,
-                        err,
-                    )
-                    await asyncio.sleep(attempt)
-
-        if collected:
-            return sorted(collected, key=_filename_timestamp_or_min, reverse=True)
-        if last_error is not None:
-            raise last_error
-        return []
+        processed_by_slot: dict[str, set[str]] = {}
+        candidates: list[str] = []
+        for filename in source_filenames:
+            slot = _slot_of(filename)
+            if slot is None or slot not in target_slots:
+                continue
+            if slot not in processed_by_slot:
+                record = self._load_slot_record(slot)
+                processed_by_slot[slot] = set(record["source_filenames"])
+            if filename not in processed_by_slot[slot]:
+                candidates.append(filename)
+        return candidates
 
     def _merge_flashes_into_slot(
         self, filename: str, flashes: list[dict[str, float]]
     ) -> int:
-        output_filename = self.output_filename(filename)
-        destination = self._raw_dir / output_filename
-        record = self._load_slot_record(destination)
+        slot = _slot_of(filename)
+        if slot is None:
+            raise ValueError(f"Cannot derive GLM slot for {filename}")
+        record = self._load_slot_record(slot)
         if filename in record["source_filenames"]:
-            LOGGER.trace(
-                "Skipping GLM merge because source already exists in slot %s: %s",
-                output_filename,
-                filename,
-            )
             return 0
-
         record["source_filenames"].append(filename)
         record["source_filenames"].sort(reverse=True)
         record["flashes"].extend(flashes)
-        self._write_slot_record(destination, record)
+        destination = self._slot_path(slot)
+        temporary_path = destination.with_suffix(".json.tmp")
+        temporary_path.write_text(
+            json.dumps(record, ensure_ascii=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        temporary_path.replace(destination)
         LOGGER.trace(
-            "Merged GLM source %s into %s with %s flash(es)",
+            "Merged GLM source %s into slot %s with %s flash(es)",
             filename,
-            output_filename,
+            slot,
             len(flashes),
         )
         return 1
 
-    @staticmethod
-    def _load_slot_record(path: Path) -> GlmSlotRecord:
+    def _slot_path(self, slot: str) -> Path:
+        return self._raw_dir / f"{slot}_glm.json"
+
+    def _load_slot_record(self, slot: str) -> GlmSlotRecord:
+        path = self._slot_path(slot)
         if not path.exists():
-            return {
-                "slot_timestamp": parse_goes_slot_prefix(path.name) or "",
-                "source_filenames": [],
-                "flashes": [],
-            }
+            return {"slot_timestamp": slot, "source_filenames": [], "flashes": []}
         payload = json.loads(path.read_text(encoding="utf-8"))
         return {
-            "slot_timestamp": str(
-                payload.get("slot_timestamp") or parse_goes_slot_prefix(path.name)
-            ),
+            "slot_timestamp": slot,
             "source_filenames": [
                 str(name) for name in (payload.get("source_filenames") or [])
             ],
@@ -963,121 +634,13 @@ class GlmDownloader:
             ],
         }
 
-    @staticmethod
-    def _write_slot_record(path: Path, record: GlmSlotRecord) -> None:
-        temporary_path = path.with_suffix(".json.tmp")
-        temporary_path.write_text(
-            json.dumps(record, ensure_ascii=True, separators=(",", ":")),
-            encoding="utf-8",
-        )
-        temporary_path.replace(path)
-
-    def _candidate_source_filenames(
-        self,
-        source_filenames: list[str],
-        *,
-        target_timestamps: tuple[str, ...] | None,
-    ) -> tuple[list[str], str | None]:
-        selected_slots: list[str]
-        selected_slot_set: set[str]
-        if target_timestamps is None:
-            selected_slots = []
-            selected_slot_set = set()
-            target_history = self._raw_history
-        else:
-            selected_slots = list(target_timestamps)
-            selected_slot_set = set(selected_slots)
-            target_history = len(selected_slots)
-
-        candidate_sources: list[str] = []
-        processed_by_slot: dict[str, set[str]] = {}
-
-        for filename in source_filenames:
-            slot_timestamp = self._slot_timestamp_for_source(filename)
-            if slot_timestamp is None:
-                continue
-            if target_timestamps is None and slot_timestamp not in selected_slot_set:
-                if len(selected_slots) >= target_history:
-                    break
-                selected_slots.append(slot_timestamp)
-                selected_slot_set.add(slot_timestamp)
-            elif (
-                target_timestamps is not None
-                and slot_timestamp not in selected_slot_set
-            ):
-                continue
-            processed = processed_by_slot.get(slot_timestamp)
-            if processed is None:
-                record = self._load_slot_record(
-                    self._raw_dir / f"{slot_timestamp}_glm.json"
-                )
-                processed = {str(name) for name in record["source_filenames"]}
-                processed_by_slot[slot_timestamp] = processed
-            if filename in processed:
-                continue
-            candidate_sources.append(filename)
-
-        latest_slot_output = None
-        if selected_slots:
-            if target_timestamps is None:
-                latest_slot_output = f"{selected_slots[0]}_glm.json"
-            else:
-                available_slots = {
-                    self._slot_timestamp_for_source(filename)
-                    for filename in source_filenames
-                }
-                for slot_timestamp in selected_slots:
-                    if slot_timestamp in available_slots:
-                        latest_slot_output = f"{slot_timestamp}_glm.json"
-                        break
-        LOGGER.trace(
-            "Selected GLM candidates: selected_slots=%s candidates=%s latest_slot_output=%s",
-            selected_slots,
-            candidate_sources,
-            latest_slot_output,
-        )
-        return candidate_sources, latest_slot_output
-
     def _kept_raws_on_disk(self) -> list[Path]:
-        return sorted(
-            self._raw_dir.glob("*.json"),
-            key=lambda path: _filename_timestamp_or_min(path.name),
-            reverse=True,
-        )
-
-    def _listing_prefixes(self, missing_slots: tuple[str, ...] = ()) -> list[str]:
-        return [
-            GLM_LISTING_PREFIX_TEMPLATE.format(
-                product=GLM_PRODUCT_PREFIX,
-                year=hour.strftime("%Y"),
-                julian_day=hour.strftime("%j"),
-                hour=hour.strftime("%H"),
-            )
-            for hour in _listing_hours(missing_slots)
-        ]
-
-    def _source_key_for_filename(self, filename: str) -> str:
-        match = _filename_timestamp(filename)
-        if match is None:
-            raise ValueError(f"Cannot derive source key for {filename}")
-        source_time = match.strftime("%Y/%j/%H")
-        return f"{GLM_PRODUCT_PREFIX}/{source_time}/{filename}"
-
-    def _slot_timestamp_for_source(self, filename: str) -> str | None:
-        source_time = _filename_timestamp(filename)
-        if source_time is None:
-            return None
-        return _datetime_to_slot_timestamp(_floor_to_slot(source_time))
-
-    def _emit_progress(self, **payload: object) -> None:
-        if self._progress_callback is None:
-            return
-        self._progress_callback(payload)
+        return sorted(self._raw_dir.glob("*.json"), reverse=True)
 
 
 def _listing_hours(missing_slots: tuple[str, ...]) -> list[datetime]:
     """Recent hours plus the ones a backfill needs; listing all 24 every poll would be wasteful."""
-    now = _floor_to_slot(_utc_now() - timedelta(minutes=10))
+    now = floor_to_slot(_utc_now() - timedelta(minutes=SLOT_MINUTES))
     recent = (now - timedelta(hours=offset) for offset in range(LOOKBACK_HOURS))
     backfill = (
         datetime.strptime(slot, "%Y%j%H%M").replace(tzinfo=UTC)
@@ -1096,12 +659,11 @@ def _raise_for_response(response: Any) -> None:
 
 
 def _filename_timestamp(filename: str) -> datetime | None:
-    match = re.search(r"_s(\d{13,14})_", filename)
+    match = re.search(r"_s(\d{13})", filename)
     if match is None:
         return None
-    value = match.group(1)[:13]
     try:
-        return datetime.strptime(value, "%Y%j%H%M%S").replace(tzinfo=UTC)
+        return datetime.strptime(match.group(1), "%Y%j%H%M%S").replace(tzinfo=UTC)
     except ValueError:
         return None
 
@@ -1110,28 +672,12 @@ def _filename_timestamp_or_min(filename: str) -> datetime:
     return _filename_timestamp(filename) or datetime.min.replace(tzinfo=UTC)
 
 
-def _datetime_to_slot_timestamp(moment: datetime) -> str:
-    return moment.strftime("%Y%j%H%M")
-
-
-def _slot_timestamp_for_output_filename(filename: str) -> str | None:
-    timestamp = _filename_timestamp(filename)
-    if timestamp is not None:
-        return _datetime_to_slot_timestamp(_floor_to_slot(timestamp))
-    return parse_goes_slot_prefix(filename)
-
-
-def parse_goes_slot_prefix(filename: str) -> str | None:
-    """Return the slot timestamp of a GOES file name, or None."""
-    prefix = Path(filename).name.split("_", 1)[0]
-    if len(prefix) < 11 or not prefix[:11].isdigit():
+def _slot_of(filename: str) -> str | None:
+    """Return the 10-minute slot a NOAA or cached file name starts in."""
+    moment = _filename_timestamp(filename)
+    if moment is None:
         return None
-    return prefix[:11]
-
-
-def _floor_to_slot(moment: datetime) -> datetime:
-    floored_minute = moment.minute - (moment.minute % 10)
-    return moment.replace(minute=floored_minute, second=0, microsecond=0)
+    return datetime_to_slot_timestamp(floor_to_slot(moment))
 
 
 def _utc_now() -> datetime:

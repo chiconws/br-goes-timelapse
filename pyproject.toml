@@ -15,7 +15,8 @@ dependencies = [
   "numpy>=1.26,<2.0",
   "pillow>=11.0,<12.0",
   "h5py>=3.11,<4.0",
-  "rasterio>=1.4,<2.0",
+  "rasterio>=1.4.4,<2.0",
+  "affine>=3.0",
   "typing_extensions>=4.12,<5.0",
   "uvicorn>=0.34,<1.0",
 ]
@@ -243,6 +244,15 @@ disallow_untyped_decorators = true
 disallow_untyped_defs = true
 warn_return_any = true
 warn_unreachable = true
+
+# Tests are untyped pytest functions with fakes standing in for typed objects,
+# as in Pyright's tests environment below.
+[[tool.mypy.overrides]]
+module = ["tests", "tests.*"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+disable_error_code = ["arg-type", "explicit-override", "method-assign", "misc"]
 
 # Same settings Pylance reads in VS Code, so the editor and the gate agree.
 [tool.pyright]

@@ -10,13 +10,6 @@ import unicodedata
 
 from goes_timelapse.core.models import AreaCatalogEntry, BoundaryLine
 
-SUPPORTED_AREA_TYPES = frozenset({"municipio"})
-
-
-AREA_TYPE_PRIORITY = {
-    "municipio": 0,
-}
-
 
 def normalize_text(value: str) -> str:
     """Lowercase and strip accents for search."""
@@ -32,29 +25,11 @@ def load_boundary_lines(path: Path) -> tuple[BoundaryLine, ...]:
         raw_data = json.load(handle)
     return tuple(
         BoundaryLine(
-            bounds=_coerce_bounds(item["bounds"]),
+            bounds=parse_bounds(item["bounds"]),
             line=tuple((float(lon), float(lat)) for lon, lat in item["line"]),
         )
         for item in raw_data
     )
-
-
-def _coerce_bounds(raw_bounds: object) -> tuple[float, float, float, float]:
-    if not isinstance(raw_bounds, list | tuple) or len(raw_bounds) != 4:
-        raise ValueError("Invalid boundary bounds payload")
-    left, bottom, right, top = raw_bounds
-    return (
-        _coerce_float(left),
-        _coerce_float(bottom),
-        _coerce_float(right),
-        _coerce_float(top),
-    )
-
-
-def _coerce_float(value: object) -> float:
-    if not isinstance(value, int | float | str):
-        raise ValueError("Invalid boundary coordinate")  # noqa: TRY004 - malformed payload is a ValueError
-    return float(value)
 
 
 class AreaCatalog:
@@ -62,19 +37,15 @@ class AreaCatalog:
 
     def __init__(self, areas: list[AreaCatalogEntry]):
         """Index the given areas by id and search key."""
-        filtered_areas = [
-            area for area in areas if area.area_type in SUPPORTED_AREA_TYPES
-        ]
         self._areas = sorted(
-            filtered_areas,
+            areas,
             key=lambda area: (
-                AREA_TYPE_PRIORITY.get(area.area_type, 99),
                 -(area.population or -1),
                 area.name,
                 area.state_code or "",
             ),
         )
-        self._by_id = {area.area_id: area for area in filtered_areas}
+        self._by_id = {area.area_id: area for area in areas}
 
     @classmethod
     def from_path(cls, path: Path) -> AreaCatalog:
@@ -125,7 +96,6 @@ class AreaCatalog:
         scored.sort(
             key=lambda item: (
                 *item[0],
-                AREA_TYPE_PRIORITY.get(item[1].area_type, 99),
                 -(item[1].population or -1),
                 item[1].name,
                 item[1].state_code or "",
@@ -255,3 +225,9 @@ class AreaCatalog:
             if not matched:
                 return None
         return (token_positions[0], remainder)
+
+
+def parse_bounds(raw_bounds: list[float]) -> tuple[float, float, float, float]:
+    """Read a (left, bottom, right, top) box from JSON."""
+    left, bottom, right, top = map(float, raw_bounds)
+    return (left, bottom, right, top)

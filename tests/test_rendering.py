@@ -20,9 +20,8 @@ from goes_timelapse.pipeline.rendering import (
     RenderPlan,
     WebpBuilder,
     format_capture_time,
-    write_lovelace_snippet,
 )
-from tests.helpers import create_test_netcdf, create_test_tif
+from tests.helpers import create_test_tif
 
 
 def _window(col_off: int, row_off: int, width: int, height: int) -> Window:
@@ -61,46 +60,8 @@ def test_renderer_processes_visible_frames_and_builds_webp(settings):
     assert all(path.exists() for path in png_paths)
 
     media_path = WebpBuilder(settings).build(area.area_id, png_paths)
-    snippet_path = write_lovelace_snippet(settings.snippets_dir, area, area.area_id)
 
     assert media_path.exists()
-    assert snippet_path.exists()
-
-
-def test_renderer_processes_netcdf_frames_and_builds_webp(settings):
-    """Test renderer processes netcdf frames and builds webp."""
-    catalog = AreaCatalog.from_path(settings.catalog_path)
-    area = catalog.get("municipio-3205309")
-    assert area is not None
-    geometry = IbgeGeometryStore(
-        settings.geometry_cache_dir,
-        base_url=settings.ibge_malhas_url,
-        timeout_seconds=settings.ibge_request_timeout,
-    ).load_geometry(area)
-
-    raw_paths = [
-        create_test_netcdf(
-            settings.raw_dir
-            / "OR_ABI-L2-CMIPF-M6C02_G19_s2026001120214_e2026001120952_c2026001120956.nc",
-            offset=0,
-        ),
-        create_test_netcdf(
-            settings.raw_dir
-            / "OR_ABI-L2-CMIPF-M6C02_G19_s2026001121214_e2026001121952_c2026001121956.nc",
-            offset=5,
-        ),
-        create_test_netcdf(
-            settings.raw_dir
-            / "OR_ABI-L2-CMIPF-M6C02_G19_s2026001122214_e2026001122952_c2026001122956.nc",
-            offset=10,
-        ),
-    ]
-
-    renderer = AreaRenderer(settings)
-    png_paths = renderer.process_frames(area, geometry, raw_paths)
-
-    assert len(png_paths) == 3
-    assert all(path.exists() for path in png_paths)
 
 
 def test_large_municipalities_get_less_extra_margin_than_small_ones(settings):
@@ -168,25 +129,9 @@ def test_renderer_falls_back_when_source_returns_empty_image(settings, monkeypat
     area = catalog.get("municipio-3205309")
     assert area is not None
 
-    class _FakeSource:
-        def read_image(self, window, *, output_size=None, dst_bounds=None):
-            return Image.new("RGBA", (0, 0))
-
-        def close(self):
-            return None
-
-    class _FakeOpenSource:
-        def __init__(self, path: Path):
-            self._source = _FakeSource()
-
-        def __enter__(self):
-            return self._source
-
-        def __exit__(self, exc_type, exc, tb):
-            return None
-
     monkeypatch.setattr(
-        "goes_timelapse.pipeline.rendering._open_source", _FakeOpenSource
+        "goes_timelapse.pipeline.rendering._read_crop",
+        lambda path, plan: Image.new("RGBA", (0, 0)),
     )
 
     renderer = AreaRenderer(settings)
@@ -515,7 +460,7 @@ def test_process_frames_rerenders_when_render_plan_changes(settings, monkeypatch
         Image.new("RGB", (8, 8), (128, 128, 128)).save(png_path, format="PNG")
 
     monkeypatch.setattr(
-        "goes_timelapse.pipeline.rendering._open_source", lambda path: _FakeSource()
+        "goes_timelapse.pipeline.rendering.rasterio.open", lambda path: _FakeSource()
     )
     monkeypatch.setattr(
         renderer,

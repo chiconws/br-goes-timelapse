@@ -9,7 +9,6 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 import pytest
-from rasterio import Affine
 
 from goes_timelapse.app import create_app
 from goes_timelapse.core.config import Settings
@@ -65,23 +64,15 @@ def build_settings(tmp_path: Path) -> Settings:
         poll_minutes=1,
         frame_count=3,
         gif_fps=2,
-        raw_history=4,
         solar_margin_hours=2,
         max_tracked=5,
         log_level=20,
         data_dir=tmp_path / "data",
         state_dir=tmp_path / "state",
-        work_dir=tmp_path / "work",
-        scratch_dir=tmp_path / "scratch",
-        requested_scratch_dir=tmp_path / "scratch",
-        scratch_dir_warning=None,
-        source_dir=tmp_path / "work" / "source",
-        source_dir_warning=None,
         raw_dir=tmp_path / "data" / "raw",
         processed_dir=tmp_path / "data" / "processed",
         geometry_cache_dir=geometry_cache_dir,
         media_dir=tmp_path / "media",
-        snippets_dir=tmp_path / "config" / "goes_timelapse" / "lovelace",
         db_path=tmp_path / "state" / "state.db",
         catalog_path=catalog_path,
         state_boundaries_path=state_boundaries_path,
@@ -90,7 +81,6 @@ def build_settings(tmp_path: Path) -> Settings:
         font_path=Path("C:/Windows/Fonts/arial.ttf"),
         allowed_client_hosts=("testclient", "127.0.0.1", "::1"),
         max_render_dimension=900,
-        transform=Affine(0.02, 0.0, -50.0, 0.0, -0.02, -20.0),
     )
     settings.ensure_directories()
     return settings

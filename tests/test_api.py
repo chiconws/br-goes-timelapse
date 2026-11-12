@@ -24,7 +24,6 @@ def test_root_page_serves_js_shell(client):
 
     assert response.status_code == 200
     assert "GOES timelapses de municípios" in response.text
-    assert f"static/app-{STATIC_ASSET_VERSION}.js" in response.text
     assert f"static/app-core.js?v={STATIC_ASSET_VERSION}" in response.text
     assert f"static/app-render.js?v={STATIC_ASSET_VERSION}" in response.text
     assert f"static/app-actions.js?v={STATIC_ASSET_VERSION}" in response.text
@@ -101,8 +100,7 @@ def test_api_search_pin_process_and_remove(client, settings):
             ),
         )
     )
-    rendered = service._process_area("municipio-3552403")
-    assert rendered is not None
+    service._process_area("municipio-3552403")
 
     tracked_response = client.get("/api/tracked")
     payload = tracked_response.json()

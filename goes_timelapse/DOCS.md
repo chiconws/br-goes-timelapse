@@ -20,11 +20,9 @@
 
 - `data_dir`: diretório persistente para `raw/`, `processed/` e `geometry/`.
 - `state_dir`: diretório do banco `state.db`.
-- `scratch_dir`: diretório de temporários, pouco usado com a leitura parcial.
 - `poll_minutes`: intervalo, em minutos, entre as verificações de novos quadros na NOAA.
 - `frame_count`: quantidade de quadros usados em cada animação WebP.
 - `gif_fps`: velocidade de reprodução da animação gerada.
-- `raw_history`: opção legada de compatibilidade. Download e retenção já seguem a timeline útil de cada município.
 - `solar_margin_hours`: margem, em horas, aplicada antes do nascer do sol e depois do pôr do sol para permitir leituras da Banda 2. O padrão é `0`, então essas leituras acontecem apenas entre o nascer e o pôr do sol.
 - `log_level`: nível de detalhamento dos logs do app.
 
@@ -67,7 +65,6 @@ data_dir/
 - Remover um município apaga as pastas dele e mantém as dos demais.
 - O app guarda apenas os quadros da timeline atual. Cada GeoTIFF ocupa cerca de `50 a 100 KB`.
 - `state_dir` guarda o `state.db`, que deve ficar em armazenamento confiável.
-- `scratch_dir` guarda temporários. Com a leitura parcial, ele é pouco usado.
 
 O arquivo final de cada município fica disponível em `media-source://media_source/local/goes_timelapse/<area_id>.webp`.
 
@@ -99,13 +96,11 @@ Padrão do add-on:
 ```yaml
 data_dir: /data/goes_timelapse
 state_dir: /config/goes_timelapse/state
-scratch_dir: /data/goes_timelapse/tmp
 ```
 
 Para guardar o cache em outro disco:
 
 ```yaml
 data_dir: /media/SEU_DISCO/goes_timelapse
-scratch_dir: /media/SEU_DISCO/goes_timelapse/tmp
 state_dir: /config/goes_timelapse/state
 ```
