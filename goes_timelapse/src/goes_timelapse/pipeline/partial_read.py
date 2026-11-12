@@ -130,7 +130,7 @@ class RangeFile(io.RawIOBase):
                 if response.status == expected:
                     return body, response.headers.get("Content-Length", "0")
                 if response.status not in RETRYABLE_STATUS:
-                    raise OSError(f"HTTP {response.status} em {self._parts.path}")
+                    raise OSError(f"HTTP {response.status} on {self._parts.path}")
                 failure: Exception = OSError(f"HTTP {response.status}")
             except (ConnectionError, TimeoutError, http.client.HTTPException) as err:
                 failure = err
@@ -190,7 +190,7 @@ class RangeFile(io.RawIOBase):
         end = min(start + self._block_size, self.size) - 1
         data, _ = self._request("GET", {"Range": f"bytes={start}-{end}"}, 206)
         if len(data) != end - start + 1:
-            raise OSError(f"Leitura parcial curta em {self._parts.path}")
+            raise OSError(f"Short range read on {self._parts.path}")
         with self._lock:
             self.bytes_read += len(data)
         self._blocks[index] = data
@@ -333,7 +333,7 @@ def _paint_bbox(
         math.ceil((x_max - x_offset) / x_scale) + 1 + READ_MARGIN_PIXELS, columns
     )
     if row_start >= row_stop or col_start >= col_stop:
-        raise ValueError(f"Área fora do disco do satélite: {bbox}")
+        raise ValueError(f"Area outside the satellite disk: {bbox}")
 
     stats.rows = row_stop - row_start
     counts = radiance[row_start:row_stop, col_start:col_stop]
@@ -349,8 +349,8 @@ def _paint_bbox(
     )
 
     inverse = ~transform
-    col_left, row_top = inverse * (bbox[0], bbox[3])
-    col_right, row_bottom = inverse * (bbox[2], bbox[1])
+    col_left, row_top = inverse @ (bbox[0], bbox[3])
+    col_right, row_bottom = inverse @ (bbox[2], bbox[1])
     window = (
         slice(
             max(math.floor(row_top) - READ_MARGIN_PIXELS, 0),
@@ -363,7 +363,7 @@ def _paint_bbox(
     )
     target_gray = np.zeros_like(gray[window])
     target_alpha = np.zeros_like(alpha[window])
-    target_transform = transform * Affine.translation(window[1].start, window[0].start)
+    target_transform = transform @ Affine.translation(window[1].start, window[0].start)
     for source, target in ((source_gray, target_gray), (source_alpha, target_alpha)):
         reproject(
             source=source,
@@ -489,16 +489,16 @@ def _fsync_directory(path: Path) -> None:
 def parse_glm_node(node: bytes) -> list[tuple[int, int]]:
     """HDF5 B-tree v1 leaf of a 1-D chunked dataset: (address, stored size) per chunk."""
     if len(node) < GLM_NODE_SIZE or node[:4] != b"TREE" or node[4] != 1 or node[5] != 0:
-        raise ValueError("Nó GLM fora do layout esperado")
+        raise ValueError("GLM node outside the expected layout")
     used = struct.unpack_from("<H", node, 6)[0]
     if not 1 <= used <= GLM_NODE_MAX_ENTRIES:
-        raise ValueError(f"Nó GLM com {used} entradas")
+        raise ValueError(f"GLM node with {used} entries")
     entries: list[tuple[int, int]] = []
     for index in range(used):
         position = 24 + index * 32
         size, filter_mask = struct.unpack_from("<II", node, position)
         if filter_mask != 0:
-            raise ValueError("Chunk GLM com filtro desativado")
+            raise ValueError("GLM chunk with a disabled filter")
         entries.append((struct.unpack_from("<Q", node, position + 24)[0], size))
     return entries
 
@@ -535,7 +535,7 @@ def decode_glm_chunks(
 def _decode_glm_chunk(blob: bytes) -> np.ndarray:
     raw = np.frombuffer(zlib.decompress(blob), dtype=np.uint8)
     if raw.size % 4:
-        raise ValueError("Chunk GLM com tamanho inválido")
+        raise ValueError("GLM chunk with an invalid size")
     # HDF5 shuffle stores byte 0 of every value first, then byte 1, and so on.
     return np.frombuffer(raw.reshape(4, -1).T.tobytes(), dtype="<f4")
 
