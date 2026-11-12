@@ -16,8 +16,6 @@ RAW_SOURCE_LABELS = {
     RAW_SOURCE_LIGHTNING: "Descargas GLM",
 }
 
-SLOT_MINUTES = 10
-
 
 @dataclass(slots=True, frozen=True)
 class DownloadSourcePlan:

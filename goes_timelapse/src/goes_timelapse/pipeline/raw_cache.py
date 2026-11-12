@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 import json
 from pathlib import Path
 
 from goes_timelapse.core.config import Settings
 from goes_timelapse.core.logging_utils import get_logger
-from goes_timelapse.pipeline.rendering import parse_goes_timestamp
+from goes_timelapse.pipeline.rendering import (
+    goes_timestamp_to_datetime,
+    parse_goes_timestamp,
+)
 from goes_timelapse.pipeline.runtime_types import (
     RAW_SOURCE_INFRARED,
     RAW_SOURCE_LABELS,
@@ -197,19 +200,3 @@ def raw_files_in_dir(raw_dir: Path, source_key: str) -> list[Path]:
         return list(raw_dir.glob("*.json"))
     # Direct children are files from older versions; pruning clears them as they age out.
     return [*raw_dir.rglob("*.tif"), *raw_dir.glob("*.nc")]
-
-
-def goes_timestamp_to_datetime(timestamp: str) -> datetime | None:
-    """Parse a GOES 'sYYYYJJJHHMM' timestamp, or None if invalid."""
-    if len(timestamp) < 11:
-        return None
-    try:
-        year = int(timestamp[0:4])
-        day_of_year = int(timestamp[4:7])
-        hour = int(timestamp[7:9])
-        minute = int(timestamp[9:11])
-    except ValueError:
-        return None
-
-    moment = datetime(year, 1, 1, hour=hour, minute=minute, tzinfo=UTC)
-    return moment.replace(tzinfo=UTC) + timedelta(days=day_of_year - 1)
