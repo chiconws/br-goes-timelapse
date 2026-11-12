@@ -15,7 +15,8 @@ dependencies = [
   "numpy>=1.26,<2.0",
   "pillow>=11.0,<12.0",
   "h5py>=3.11,<4.0",
-  "rasterio>=1.4,<2.0",
+  "rasterio>=1.4.4,<2.0",
+  "affine>=3.0",
   "typing_extensions>=4.12,<5.0",
   "uvicorn>=0.34,<1.0",
 ]

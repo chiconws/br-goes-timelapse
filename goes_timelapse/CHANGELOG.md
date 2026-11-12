@@ -5,6 +5,8 @@
 - Remove as opções `scratch_dir` e `raw_history`, que a leitura parcial da 1.2.0 deixou sem efeito. O Supervisor ignora os valores antigos.
 - Deixa de gravar os snippets YAML de card em `/config/goes_timelapse/lovelace/`. Os arquivos que já existem podem ser apagados.
 - O aviso de espaço em disco passa a considerar só o `data_dir`, onde ficam as imagens.
+- Apaga no início as pastas `source/` e `tmp/` do `data_dir`, que guardavam downloads completos da 1.1.x e não são mais usadas.
+- Exige `affine>=3.0` e `rasterio>=1.4.4`.
 - Simplifica o código interno sem mudar as animações geradas.
 
 ## 1.2.0
