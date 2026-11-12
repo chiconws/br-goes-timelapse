@@ -29,9 +29,7 @@ from goes_timelapse.pipeline.partial_read import (
     valid_flash_points,
     write_abi_crop,
 )
-from goes_timelapse.pipeline.runtime_types import StorageCheck
 from goes_timelapse.pipeline.service import GoesTimelapseService
-from goes_timelapse.pipeline.storage_guard import blocking_storage_message
 
 GLM_NAME = "OR_GLM-L2-LCFA_G19_s20260011200000_e20260011200200_c20260011200220.nc"
 LAT_NODE, LON_NODE = 1 << 20, (1 << 20) + 4096
@@ -549,20 +547,6 @@ async def test_glm_inconclusive_check_withholds_flashes(
     monkeypatch.setattr(downloader_module, "read_glm_flashes_with_hdf5", reference)
     recovered = await downloader.refresh_latest(target_timestamps=("20260011200",))
     assert (recovered.downloaded_count, recovered.failed_count) == (1, 0)
-
-
-def test_only_the_cache_volume_pauses_refresh(settings):
-    """Test only the cache volume pauses refresh."""
-    checks = {
-        key: StorageCheck(key, key, settings.data_dir, 0, 1, f"{key} cheio", True)
-        for key in ("cache", "source", "scratch")
-    }
-    assert (
-        blocking_storage_message(checks)
-        == "Refresh pausado por falta de espaço: cache cheio"
-    )
-    del checks["cache"]
-    assert blocking_storage_message(checks) is None
 
 
 @pytest.mark.asyncio

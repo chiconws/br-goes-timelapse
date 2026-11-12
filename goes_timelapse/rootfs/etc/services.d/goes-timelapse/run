@@ -6,10 +6,6 @@ state_dir="$(bashio::config 'state_dir')"
 if [[ -n "$state_dir" && "$state_dir" != "null" ]]; then
   export GOES_STATE_DIR="$state_dir"
 fi
-scratch_dir="$(bashio::config 'scratch_dir')"
-if [[ -n "$scratch_dir" && "$scratch_dir" != "null" ]]; then
-  export GOES_SCRATCH_DIR="$scratch_dir"
-fi
 export GOES_POLL_MINUTES="$(bashio::config 'poll_minutes')"
 export GOES_FRAME_COUNT="$(bashio::config 'frame_count')"
 export GOES_GIF_FPS="$(bashio::config 'gif_fps')"

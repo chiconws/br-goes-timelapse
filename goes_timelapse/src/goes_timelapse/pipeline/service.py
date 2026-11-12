@@ -55,14 +55,8 @@ from goes_timelapse.pipeline.runtime_types import (
     DownloadSourcePlan,
     RawFileEntry,
     SourceDownloadStatus,
-    StorageCheck,
 )
-from goes_timelapse.pipeline.storage_guard import (
-    blocking_storage_message,
-    build_storage_checks,
-    storage_warning_summary,
-    worst_staging_check,
-)
+from goes_timelapse.pipeline.storage_guard import cache_storage_check
 from goes_timelapse.pipeline.timeline_runtime import (
     build_area_timeline_plan_for_area,
     build_download_plan_reason,
@@ -177,30 +171,17 @@ class GoesTimelapseService:
     async def start(self) -> None:
         """Start the background refresh and render tasks."""
         self.settings.ensure_directories()
-        self.settings.configure_runtime_environment()
         LOGGER.info(
-            "Storage configured: data_dir=%s state_dir=%s source_dir=%s scratch_dir=%s media_dir=%s",
+            "Storage configured: data_dir=%s state_dir=%s media_dir=%s",
             self.settings.data_dir,
             self.settings.state_dir,
-            self.settings.source_dir,
-            self.settings.scratch_dir,
             self.settings.media_dir,
         )
-        if self.settings.source_dir_warning:
-            LOGGER.warning(self.settings.source_dir_warning)
-        if self.settings.scratch_dir_warning:
-            LOGGER.warning(self.settings.scratch_dir_warning)
-        storage_checks = self._storage_checks()
-        LOGGER.trace("Startup storage checks: %s", storage_checks)
-        blocking_storage_message = self._blocking_storage_message(storage_checks)
-        if blocking_storage_message is not None:
-            LOGGER.error(
-                "Storage guard active at startup: %s", blocking_storage_message
-            )
-        else:
-            storage_warning = self._storage_warning_summary(storage_checks)
-            if storage_warning is not None:
-                LOGGER.warning("Storage warning at startup: %s", storage_warning)
+        storage = cache_storage_check(self.settings)
+        if storage.is_blocking:
+            LOGGER.error("Storage guard active at startup: %s", storage.warning)
+        elif storage.warning is not None:
+            LOGGER.warning("Storage warning at startup: %s", storage.warning)
         for area_id in self.state_store.tracked_ids():
             if self.catalog.get(area_id) is None:
                 LOGGER.info("Removing unsupported tracked area %s", area_id)
@@ -343,9 +324,7 @@ class GoesTimelapseService:
         """Return the service status shown in the UI."""
         files = self._all_raw_files()
         raw_disk_bytes = self._raw_disk_usage_bytes()
-        storage_checks = self._storage_checks()
-        cache_check = storage_checks["cache"]
-        staging_check = self._worst_staging_check(storage_checks)
+        storage = cache_storage_check(self.settings)
         summaries = [
             source["summary"]
             for source in self.downloads_snapshot()["sources"]
@@ -364,13 +343,8 @@ class GoesTimelapseService:
             if summaries
             else "Nenhuma fonte ativa",
             "raw_disk_usage_bytes": raw_disk_bytes,
-            "disk_free_bytes": cache_check.free_bytes,
-            "disk_total_bytes": cache_check.total_bytes,
-            "staging_free_bytes": staging_check.free_bytes if staging_check else None,
-            "staging_total_bytes": staging_check.total_bytes if staging_check else None,
-            "staging_path": str(staging_check.path) if staging_check else None,
-            "staging_warning": staging_check.warning if staging_check else None,
-            "disk_warning": self._storage_warning_summary(storage_checks),
+            "disk_free_bytes": storage.free_bytes,
+            "disk_warning": storage.warning,
         }
 
     def downloads_snapshot(self) -> DownloadsSnapshot:
@@ -438,9 +412,9 @@ class GoesTimelapseService:
             for plan in plans:
                 self._apply_download_plan(plan)
 
-            storage_checks = self._storage_checks()
-            LOGGER.trace("Refresh storage checks: %s", storage_checks)
-            blocking_storage_message = self._blocking_storage_message(storage_checks)
+            storage = cache_storage_check(self.settings)
+            LOGGER.trace("Refresh storage check: %s", storage)
+            blocking_storage_message = storage.blocking_message
             if blocking_storage_message is not None:
                 LOGGER.error("Skipping raw refresh: %s", blocking_storage_message)
                 self._status["last_poll_finished_at"] = _utc_now()
@@ -1073,29 +1047,6 @@ class GoesTimelapseService:
             if path.exists():
                 return path
         return None
-
-    def _storage_checks(self) -> dict[str, StorageCheck]:
-        return build_storage_checks(self.settings)
-
-    @staticmethod
-    def _worst_staging_check(
-        storage_checks: dict[str, StorageCheck],
-    ) -> StorageCheck | None:
-        return worst_staging_check(storage_checks)
-
-    @classmethod
-    def _storage_warning_summary(
-        cls,
-        storage_checks: dict[str, StorageCheck],
-    ) -> str | None:
-        return storage_warning_summary(storage_checks)
-
-    @classmethod
-    def _blocking_storage_message(
-        cls,
-        storage_checks: dict[str, StorageCheck],
-    ) -> str | None:
-        return blocking_storage_message(storage_checks)
 
 
 def _coerce_int(value: object | None) -> int:
