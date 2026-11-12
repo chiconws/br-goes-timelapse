@@ -135,9 +135,9 @@ state_dir: /config/goes_timelapse/state
 
 ## Capturas de tela
 
-Busca de municípios:
+Interface com o município selecionado no visor e os demais em miniaturas:
 
-![Busca de município](docs/images/ui-busca-municipio.png)
+![Interface do app com São Paulo - SP no visor](docs/images/ui-visor.png)
 
 Prévia de animação gerada:
 
