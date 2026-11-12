@@ -36,7 +36,6 @@ from goes_timelapse.pipeline.raw_cache import (
     available_raw_paths_by_source,
     goes_timestamp_to_datetime,
     prune_raw_cache,
-    raw_disk_usage_bytes,
     raw_files_for_source,
     raw_timestamp_count,
 )
@@ -155,7 +154,7 @@ class GoesTimelapseService:
             "last_poll_error": None,
         }
         self._download_status: dict[str, SourceDownloadStatus] = {
-            source_key: self._initial_download_status(source_key)
+            source_key: build_initial_download_status(source_key)
             for source_key in self._downloaders
         }
         self._centroid_cache: dict[str, tuple[float, float]] = {}
@@ -316,8 +315,7 @@ class GoesTimelapseService:
 
     def status_snapshot(self) -> dict[str, object]:
         """Return the service status shown in the UI."""
-        files = self._all_raw_files()
-        raw_disk_bytes = self._raw_disk_usage_bytes()
+        files = all_raw_files(self.settings)
         storage = cache_storage_check(self.settings)
         summaries = [
             source["summary"]
@@ -330,12 +328,12 @@ class GoesTimelapseService:
             "tracked_count": self.state_store.count_tracked(),
             "queue_length": self._queue.qsize(),
             "raw_frame_count": len(files),
-            "raw_timestamp_count": self._raw_timestamp_count(),
+            "raw_timestamp_count": raw_timestamp_count(files),
             "raw_frame_latest": files[0]["label"] if files else None,
             "raw_download_summary": " | ".join(summaries)
             if summaries
             else "Nenhuma fonte ativa",
-            "raw_disk_usage_bytes": raw_disk_bytes,
+            "raw_disk_usage_bytes": sum(item["size_bytes"] for item in files),
             "disk_free_bytes": storage.free_bytes,
             "disk_warning": storage.warning,
         }
@@ -366,7 +364,9 @@ class GoesTimelapseService:
                     "files_on_disk": files,
                     "file_count": len(files),
                     "disk_usage_bytes": sum(item["size_bytes"] for item in files),
-                    "summary": self._source_download_summary(source_key, len(files)),
+                    "summary": build_source_download_summary(
+                        status, raw_frame_count=len(files)
+                    ),
                 }
             )
         return {"sources": sources}
@@ -598,9 +598,8 @@ class GoesTimelapseService:
             len(frame_specs),
             [frame.timestamp for frame in frame_specs],
         )
-        existing_media_path = self._existing_media_path(area_id, tracked)
         if not frame_specs:
-            if existing_media_path is not None:
+            if self.media_path(area_id).exists():
                 self._set_area_status(area_id, "ready", last_error=None)
             else:
                 self._set_area_status(area_id, "queued", last_error=None)
@@ -819,7 +818,7 @@ class GoesTimelapseService:
                 tracked_area_ids=tracked_area_ids,
                 should_download=bool(target_timestamps_by_source[source_key]),
                 target_timestamps=target_timestamps_by_source[source_key],
-                reason=self._download_plan_reason(
+                reason=build_download_plan_reason(
                     source_key=source_key,
                     tracked_area_ids=tracked_area_ids,
                     target_timestamps=target_timestamps_by_source[source_key],
@@ -867,19 +866,6 @@ class GoesTimelapseService:
             reference_moment=reference_moment,
         )
 
-    def _download_plan_reason(
-        self,
-        *,
-        source_key: str,
-        tracked_area_ids: tuple[str, ...],
-        target_timestamps: tuple[str, ...],
-    ) -> str:
-        return build_download_plan_reason(
-            source_key=source_key,
-            tracked_area_ids=tracked_area_ids,
-            target_timestamps=target_timestamps,
-        )
-
     def _resolve_area_centroid(self, area: AreaCatalogEntry) -> tuple[float, float]:
         cached = self._centroid_cache.get(area.area_id)
         if cached is not None:
@@ -895,7 +881,9 @@ class GoesTimelapseService:
                 area_obj
             ),
             source_paths=self._available_raw_paths_by_source(area.area_id),
-            lightning_points_by_timestamp=self._available_lightning_points_by_timestamp(),
+            lightning_points_by_timestamp=available_lightning_points_by_timestamp(
+                self.settings
+            ),
         )
 
     def _area_needs_reprocessing(
@@ -923,27 +911,6 @@ class GoesTimelapseService:
 
         return tracked.latest_source_timestamp < latest_kept_timestamp
 
-    def _source_download_summary(self, source_key: str, raw_frame_count: int) -> str:
-        return build_source_download_summary(
-            self._download_status[source_key],
-            raw_frame_count=raw_frame_count,
-        )
-
-    def _initial_download_status(self, source_key: str) -> SourceDownloadStatus:
-        return build_initial_download_status(source_key)
-
-    def _all_raw_files(self) -> list[RawFileEntry]:
-        return all_raw_files(
-            self.settings,
-            tuple(self._downloaders.keys()),
-        )
-
-    def _raw_timestamp_count(self) -> int:
-        return raw_timestamp_count(self._all_raw_files())
-
-    def _raw_disk_usage_bytes(self) -> int:
-        return raw_disk_usage_bytes(self.settings, tuple(self._downloaders.keys()))
-
     def _raw_files_for_source(self, source_key: str) -> list[RawFileEntry]:
         return raw_files_for_source(self.settings, source_key)
 
@@ -952,42 +919,14 @@ class GoesTimelapseService:
     ) -> dict[str, dict[str, Path]]:
         return available_raw_paths_by_source(self.settings, area_id, self._is_valid_raw)
 
-    def _available_lightning_points_by_timestamp(
-        self,
-    ) -> dict[str, tuple[tuple[float, float], ...]]:
-        return available_lightning_points_by_timestamp(self.settings, LOGGER)
-
     def _build_global_keep_timestamps(self) -> dict[str, tuple[str, ...]]:
-        tracked_areas = self._tracked_catalog_areas()
-        if not tracked_areas:
-            return {
-                RAW_SOURCE_VISIBLE: (),
-                RAW_SOURCE_INFRARED: (),
-                RAW_SOURCE_LIGHTNING: (),
-            }
-        return self._build_global_target_timestamps(tracked_areas)
+        return self._build_global_target_timestamps(self._tracked_catalog_areas())
 
     def _prune_raw_cache(self) -> str | None:
         return prune_raw_cache(
             settings=self.settings,
-            source_keys=tuple(self._downloaders.keys()),
             keep_timestamps_by_source=self._build_global_keep_timestamps(),
-            logger=LOGGER,
         )
-
-    def _existing_media_path(
-        self,
-        area_id: str,
-        tracked: TrackedArea,
-    ) -> Path | None:
-        candidates: list[Path] = []
-        if tracked.media_path:
-            candidates.append(Path(tracked.media_path))
-        candidates.append(self.media_path(area_id))
-        for path in candidates:
-            if path.exists():
-                return path
-        return None
 
 
 def _utc_now() -> str:
