@@ -1,28 +1,33 @@
+"""Frame rendering and WebP animation output."""
+
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 import math
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import re
 from time import perf_counter
+from typing import cast
 from zoneinfo import ZoneInfo
-from typing import Sequence
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
-from rasterio.warp import transform as transform_points
-from rasterio.warp import transform_bounds
-from rasterio.windows import bounds as window_bounds
-from rasterio.windows import Window
+from rasterio.crs import CRS
+from rasterio.warp import transform as transform_points, transform_bounds
+from rasterio.windows import Window, bounds as window_bounds
 
 from goes_timelapse.core.config import Settings
 from goes_timelapse.core.logging_utils import get_logger
 from goes_timelapse.core.models import AreaCatalogEntry, AreaGeometry, BoundaryLine
 from goes_timelapse.data.catalog import load_boundary_lines
-from goes_timelapse.pipeline.raster_sources import WGS84_CRS, open_raster_source
-
+from goes_timelapse.pipeline.raster_sources import (
+    WGS84_CRS,
+    RasterSource,
+    open_raster_source,
+)
 
 BRAZIL_TZ = ZoneInfo("America/Sao_Paulo")
 LEGACY_TIMESTAMP_PATTERN = re.compile(r"^(\d{11})_")
@@ -32,6 +37,8 @@ LOGGER = get_logger(__name__)
 
 @dataclass(slots=True, frozen=True)
 class RenderPlan:
+    """Frames and overlays to render for one municipality."""
+
     window: Window
     dst_bounds: tuple[float, float, float, float]
     scaled_polygon: tuple[tuple[float, float], ...]
@@ -42,6 +49,8 @@ class RenderPlan:
 
 @dataclass(slots=True, frozen=True)
 class FrameSpec:
+    """Sources and blend of one output frame."""
+
     timestamp: str
     primary_path: Path
     blend_path: Path | None = None
@@ -50,6 +59,7 @@ class FrameSpec:
 
 
 def parse_goes_timestamp(filename: str) -> str:
+    """Return the start timestamp of a GOES file name."""
     name = Path(filename).name
     legacy_match = LEGACY_TIMESTAMP_PATTERN.match(name)
     if legacy_match:
@@ -63,6 +73,7 @@ def parse_goes_timestamp(filename: str) -> str:
 
 
 def format_capture_time(filename: str) -> str:
+    """Format a GOES file's start time for the frame label."""
     timestamp = parse_goes_timestamp(filename)
     if len(timestamp) < 11:
         return "Unknown capture time"
@@ -78,7 +89,10 @@ def format_capture_time(filename: str) -> str:
 
 
 class AreaRenderer:
+    """Render a municipality's frames to PNG."""
+
     def __init__(self, settings: Settings):
+        """Store settings and load the state boundary overlay."""
         self._settings = settings
         self._font_cache: dict[int, ImageFont.FreeTypeFont | ImageFont.ImageFont] = {}
         try:
@@ -96,7 +110,10 @@ class AreaRenderer:
         *,
         marker_coordinates: tuple[float, float] | None = None,
     ) -> list[Path]:
-        frame_specs = self._coerce_frame_specs(frame_inputs)[-self._settings.frame_count :]
+        """Render the planned frames, reusing those already on disk."""
+        frame_specs = self._coerce_frame_specs(frame_inputs)[
+            -self._settings.frame_count :
+        ]
         if not frame_specs:
             return []
         LOGGER.trace(
@@ -110,7 +127,9 @@ class AreaRenderer:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         with _open_source(frame_specs[0].primary_path) as src:
-            plan = self._build_render_plan(geometry, src, marker_coordinates=marker_coordinates)
+            plan = self._build_render_plan(
+                geometry, src, marker_coordinates=marker_coordinates
+            )
 
         started_at = perf_counter()
         rendered_count = 0
@@ -151,7 +170,9 @@ class AreaRenderer:
         payload = {
             "timestamp": frame_spec.timestamp,
             "primary": frame_spec.primary_path.name,
-            "blend": frame_spec.blend_path.name if frame_spec.blend_path is not None else None,
+            "blend": frame_spec.blend_path.name
+            if frame_spec.blend_path is not None
+            else None,
             "blend_alpha": round(frame_spec.blend_alpha, 4),
             "dst_bounds": [round(value, 6) for value in plan.dst_bounds],
             "output_size": list(plan.output_size),
@@ -171,6 +192,7 @@ class AreaRenderer:
         return digest[:12]
 
     def cleanup(self, area_id: str) -> None:
+        """Delete a municipality's rendered frames."""
         output_dir = self._settings.processed_dir / area_id
         if not output_dir.exists():
             return
@@ -181,7 +203,7 @@ class AreaRenderer:
     def _build_render_plan(
         self,
         geometry: AreaGeometry,
-        src,
+        src: RasterSource,
         *,
         marker_coordinates: tuple[float, float] | None = None,
     ) -> RenderPlan:
@@ -198,7 +220,7 @@ class AreaRenderer:
             minimum_output_dimension = min(720, self._settings.max_render_dimension)
         target_dimension = min(
             self._settings.max_render_dimension,
-            max(max(crop_width, crop_height), minimum_output_dimension),
+            max(crop_width, crop_height, minimum_output_dimension),
         )
         output_width = target_dimension
         output_height = target_dimension
@@ -234,9 +256,11 @@ class AreaRenderer:
     def _fit_destination_bounds_to_source(
         self,
         dst_bounds: tuple[float, float, float, float],
-        src,
+        src: RasterSource,
     ) -> tuple[float, float, float, float]:
-        source_left, source_bottom, source_right, source_top = self._source_bounds_in_wgs84(src)
+        source_left, source_bottom, source_right, source_top = (
+            self._source_bounds_in_wgs84(src)
+        )
         left, bottom, right, top = dst_bounds
         width = right - left
         height = top - bottom
@@ -284,7 +308,9 @@ class AreaRenderer:
         image = self._load_frame_image(frame_spec.primary_path, area.area_id, plan)
         blend_image: Image.Image | None = None
         if frame_spec.blend_path is not None:
-            blend_image = self._load_frame_image(frame_spec.blend_path, area.area_id, plan)
+            blend_image = self._load_frame_image(
+                frame_spec.blend_path, area.area_id, plan
+            )
             image = Image.blend(image, blend_image, frame_spec.blend_alpha)
             blend_image.close()
 
@@ -297,7 +323,9 @@ class AreaRenderer:
             (round(point[0], 1), round(point[1], 1)) for point in plan.scaled_polygon
         ]
         if polygon_points:
-            draw.line(polygon_points + [polygon_points[0]], fill=(255, 214, 10, 255), width=2)
+            draw.line(
+                [*polygon_points, polygon_points[0]], fill=(255, 214, 10, 255), width=2
+            )
 
         lightning_points = self._scale_points_to_output(
             frame_spec.lightning_points,
@@ -306,7 +334,7 @@ class AreaRenderer:
             image.size[1],
         )
         if lightning_points:
-            lightning_radius = max(2, int(round(image.size[0] * 0.0045)))
+            lightning_radius = max(2, round(image.size[0] * 0.0045))
             for lightning_x, lightning_y in lightning_points:
                 draw.ellipse(
                     (
@@ -322,7 +350,7 @@ class AreaRenderer:
 
         if plan.scaled_marker is not None:
             marker_x, marker_y = plan.scaled_marker
-            marker_radius = max(4, int(round(image.size[0] * 0.008)))
+            marker_radius = max(4, round(image.size[0] * 0.008))
             draw.ellipse(
                 (
                     marker_x - marker_radius,
@@ -407,7 +435,9 @@ class AreaRenderer:
         line_gap = 6
         padding_x = 14
         padding_y = 10
-        text_height = sum(box[3] - box[1] for box in boxes) + line_gap * (len(lines) - 1)
+        text_height = sum(box[3] - box[1] for box in boxes) + line_gap * (
+            len(lines) - 1
+        )
         background_box = (
             20,
             20,
@@ -415,7 +445,7 @@ class AreaRenderer:
             20 + text_height + padding_y * 2,
         )
         draw.rounded_rectangle(background_box, radius=12, fill=(0, 0, 0, 150))
-        y_position = background_box[1] + padding_y
+        y_position: float = background_box[1] + padding_y
         for line, box in zip(lines, boxes, strict=True):
             draw.text(
                 (background_box[0] + padding_x, y_position),
@@ -425,10 +455,13 @@ class AreaRenderer:
             )
             y_position += box[3] - box[1] + line_gap
 
-    def _load_font(self, font_size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    def _load_font(
+        self, font_size: int
+    ) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
         cached = self._font_cache.get(font_size)
         if cached is not None:
             return cached
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont
         try:
             font = ImageFont.truetype(str(self._settings.font_path), font_size)
         except OSError:
@@ -462,13 +495,15 @@ class AreaRenderer:
             scaled_lines.append(tuple(scaled_line))
         return scaled_lines
 
-    def _project_polygon_to_source(self, polygon: tuple[tuple[float, float], ...], src) -> list[tuple[float, float]]:
+    def _project_polygon_to_source(
+        self, polygon: tuple[tuple[float, float], ...], src: RasterSource
+    ) -> list[tuple[float, float]]:
         return self._project_points_to_source(polygon, src)
 
     def _project_points_to_source(
         self,
         points: tuple[tuple[float, float], ...],
-        src,
+        src: RasterSource,
     ) -> list[tuple[float, float]]:
         if not points:
             return []
@@ -481,9 +516,14 @@ class AreaRenderer:
         transformed = transform_points(WGS84_CRS, src.crs, lon_values, lat_values)
         x_values = transformed[0]
         y_values = transformed[1]
-        return [inverse_transform * (x, y) for x, y in zip(x_values, y_values, strict=True)]
+        return [
+            inverse_transform * (x, y) for x, y in zip(x_values, y_values, strict=True)
+        ]
 
-    def destination_bounds(self, geometry: AreaGeometry) -> tuple[float, float, float, float]:
+    def destination_bounds(
+        self, geometry: AreaGeometry
+    ) -> tuple[float, float, float, float]:
+        """Return the lon/lat box framed around the municipality."""
         min_lon, min_lat, max_lon, max_lat = geometry.bounds
         centroid_lon, centroid_lat = geometry.centroid
         base_span = max(max_lon - min_lon, max_lat - min_lat)
@@ -509,7 +549,7 @@ class AreaRenderer:
 
     def _build_source_window(
         self,
-        src,
+        src: RasterSource,
         dst_bounds: tuple[float, float, float, float],
     ) -> Window:
         if src.crs == WGS84_CRS:
@@ -523,10 +563,10 @@ class AreaRenderer:
         right_col, bottom_row = inverse_transform * (max_x, min_y)
 
         margin = 24
-        col_off = int(math.floor(min(left_col, right_col))) - margin
-        row_off = int(math.floor(min(top_row, bottom_row))) - margin
-        col_max = int(math.ceil(max(left_col, right_col))) + margin
-        row_max = int(math.ceil(max(top_row, bottom_row))) + margin
+        col_off = math.floor(min(left_col, right_col)) - margin
+        row_off = math.floor(min(top_row, bottom_row)) - margin
+        col_max = math.ceil(max(left_col, right_col)) + margin
+        row_max = math.ceil(max(top_row, bottom_row)) + margin
 
         col_off = min(max(col_off, 0), max(src.width - 1, 0))
         row_off = min(max(row_off, 0), max(src.height - 1, 0))
@@ -537,7 +577,7 @@ class AreaRenderer:
     def _transform_bounds_to_source(
         self,
         bounds: tuple[float, float, float, float],
-        dst_crs,
+        dst_crs: CRS,
     ) -> tuple[float, float, float, float]:
         left, bottom, right, top = bounds
         samples = []
@@ -560,14 +600,19 @@ class AreaRenderer:
         y_values = transformed[1]
         return (min(x_values), min(y_values), max(x_values), max(y_values))
 
-    def _source_bounds_in_wgs84(self, src) -> tuple[float, float, float, float]:
+    def _source_bounds_in_wgs84(
+        self, src: RasterSource
+    ) -> tuple[float, float, float, float]:
         source_bounds = window_bounds(
             Window.from_slices((0, src.height), (0, src.width)),
             src.transform,
         )
         if src.crs == WGS84_CRS:
-            return source_bounds
-        return transform_bounds(src.crs, WGS84_CRS, *source_bounds, densify_pts=21)
+            return cast(tuple[float, float, float, float], source_bounds)
+        return cast(
+            tuple[float, float, float, float],
+            transform_bounds(src.crs, WGS84_CRS, *source_bounds, densify_pts=21),
+        )
 
     def _scale_polygon_to_output(
         self,
@@ -639,7 +684,9 @@ class AreaRenderer:
         return (marker_x, marker_y)
 
     @staticmethod
-    def _coerce_frame_specs(frame_inputs: Sequence[Path | FrameSpec]) -> list[FrameSpec]:
+    def _coerce_frame_specs(
+        frame_inputs: Sequence[Path | FrameSpec],
+    ) -> list[FrameSpec]:
         frame_specs: list[FrameSpec] = []
         for item in frame_inputs:
             if isinstance(item, FrameSpec):
@@ -656,10 +703,14 @@ class AreaRenderer:
 
 
 class WebpBuilder:
+    """Assemble rendered frames into an animated WebP."""
+
     def __init__(self, settings: Settings):
+        """Store settings."""
         self._settings = settings
 
     def build(self, area_id: str, png_paths: list[Path]) -> Path:
+        """Write the animation for an area and return its path."""
         started_at = perf_counter()
         output_path = self._settings.media_dir / f"{area_id}.webp"
         duration_ms = max(100, round(1000 / self._settings.gif_fps))
@@ -709,6 +760,7 @@ GifBuilder = WebpBuilder
 def write_lovelace_snippet(
     snippets_dir: Path, area: AreaCatalogEntry, area_id: str
 ) -> Path:
+    """Write a picture-card YAML snippet for the area."""
     snippet_path = snippets_dir / f"{area_id}.yaml"
     snippet = (
         f"# {area.display_name}\n"
@@ -727,15 +779,16 @@ def write_lovelace_snippet(
 
 MunicipalityRenderer = AreaRenderer
 
+
 class _open_source:
     def __init__(self, path: Path):
         self._path = path
-        self._source = None
+        self._source: RasterSource | None = None
 
-    def __enter__(self):
+    def __enter__(self) -> RasterSource:
         self._source = open_raster_source(self._path)
         return self._source
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(self, *exc_info: object) -> None:
         if self._source is not None:
             self._source.close()

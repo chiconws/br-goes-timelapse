@@ -1,0 +1,22 @@
+name: Bug report
+description: Something does not work as expected.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: App and Home Assistant versions
+      placeholder: v1.2.0 on Home Assistant 2026.11.0
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: App logs
+      description: Settings → Apps → GOES Timelapse → Logs (set log_level to debug first). Paste the relevant part.

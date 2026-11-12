@@ -1,14 +1,15 @@
+"""Municipality outlines from the IBGE mesh API, cached on disk."""
+
 from __future__ import annotations
 
 import gzip
 import json
 import math
-import urllib.request
 from pathlib import Path
 from urllib.parse import quote
+import urllib.request
 
 from goes_timelapse.core.models import AreaCatalogEntry, AreaGeometry
-
 
 MALHAS_SEGMENTS = {
     "municipio": "municipios",
@@ -16,13 +17,17 @@ MALHAS_SEGMENTS = {
 
 
 class IbgeGeometryStore:
+    """Fetch and cache municipality outlines from IBGE."""
+
     def __init__(self, cache_dir: Path, *, base_url: str, timeout_seconds: int = 30):
+        """Store the cache directory, API base URL and timeout."""
         self._cache_dir = cache_dir
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
 
     def load_geometry(self, area: AreaCatalogEntry) -> AreaGeometry:
+        """Return the cached outline, fetching it on a miss."""
         cache_path = self.cache_path(area.area_id)
         if cache_path.exists():
             return self._read_geometry(cache_path)
@@ -32,6 +37,7 @@ class IbgeGeometryStore:
         return geometry
 
     def fetch_geometry(self, area: AreaCatalogEntry) -> AreaGeometry:
+        """Download the outline from IBGE and cache it."""
         segment = MALHAS_SEGMENTS[area.area_type]
         encoded_code = quote(area.area_code, safe="")
         url = (
@@ -42,6 +48,7 @@ class IbgeGeometryStore:
         return _geometry_from_geojson(area.area_id, payload)
 
     def cache_path(self, area_id: str) -> Path:
+        """Return the cache file for an area."""
         return self._cache_dir / f"{area_id}.json.gz"
 
     @staticmethod
@@ -61,7 +68,10 @@ class IbgeGeometryStore:
             json.dump(
                 {
                     "area_id": geometry.area_id,
-                    "centroid": [round(geometry.centroid[0], 6), round(geometry.centroid[1], 6)],
+                    "centroid": [
+                        round(geometry.centroid[0], 6),
+                        round(geometry.centroid[1], 6),
+                    ],
                     "bounds": [round(value, 6) for value in geometry.bounds],
                     "polygon": [
                         [round(lon, 6), round(lat, 6)] for lon, lat in geometry.polygon
@@ -91,13 +101,13 @@ def _load_json_url(url: str, *, timeout_seconds: int) -> object:
 
 def _geometry_from_geojson(area_id: str, payload: object) -> AreaGeometry:
     if not isinstance(payload, dict):
-        raise ValueError("Unexpected GeoJSON response shape")
+        raise ValueError("Unexpected GeoJSON response shape")  # noqa: TRY004 - malformed payload is a ValueError
     features = payload.get("features")
     if not isinstance(features, list) or not features:
         raise ValueError("No GeoJSON features returned by IBGE")
     geometry = features[0].get("geometry")
     if not isinstance(geometry, dict):
-        raise ValueError("Malformed GeoJSON geometry")
+        raise ValueError("Malformed GeoJSON geometry")  # noqa: TRY004 - malformed payload is a ValueError
 
     rings = _extract_exterior_rings(geometry)
     if not rings:
@@ -110,7 +120,9 @@ def _geometry_from_geojson(area_id: str, payload: object) -> AreaGeometry:
         area_id=area_id,
         centroid=(round(float(centroid[0]), 6), round(float(centroid[1]), 6)),
         bounds=_rounded_bounds(bounds),
-        polygon=tuple((round(float(lon), 6), round(float(lat), 6)) for lon, lat in polygon),
+        polygon=tuple(
+            (round(float(lon), 6), round(float(lat), 6)) for lon, lat in polygon
+        ),
     )
 
 
@@ -126,7 +138,9 @@ def _coerce_bounds(raw_bounds: object) -> tuple[float, float, float, float]:
     )
 
 
-def _rounded_bounds(bounds: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+def _rounded_bounds(
+    bounds: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
     return (
         round(float(bounds[0]), 6),
         round(float(bounds[1]), 6),
@@ -137,11 +151,13 @@ def _rounded_bounds(bounds: tuple[float, float, float, float]) -> tuple[float, f
 
 def _coerce_float(value: object) -> float:
     if not isinstance(value, int | float | str):
-        raise ValueError("Invalid geometry coordinate")
+        raise ValueError("Invalid geometry coordinate")  # noqa: TRY004 - malformed payload is a ValueError
     return float(value)
 
 
-def _extract_exterior_rings(geometry: dict[str, object]) -> list[list[tuple[float, float]]]:
+def _extract_exterior_rings(
+    geometry: dict[str, object],
+) -> list[list[tuple[float, float]]]:
     geometry_type = geometry.get("type")
     coordinates = geometry.get("coordinates")
     if geometry_type == "Polygon":

@@ -4,7 +4,7 @@ App do Home Assistant para acompanhar municípios brasileiros com imagens do sat
 
 > [!NOTE]
 > Este app foi construído com ajuda intensiva de IA generativa. O comportamento atual já foi exercitado em ambiente real, mas continua sendo importante validar logs, consumo de disco e resultados visuais antes de uso em produção.
-
+<!-- -->
 > [!WARNING]
 > Cada município consome cerca de `0.9 GB/dia` de internet. Veja [Uso de rede](#uso-de-rede).
 
@@ -52,7 +52,7 @@ O app não baixa os arquivos inteiros da NOAA. Ele lê por HTTP Range só o que 
 Medido em 24h reais para Vila Velha - ES, em `2026-10-30`:
 
 | Fonte | Por dia |
-|---|---:|
+| --- | ---: |
 | Imagens (`C02` e `C13`) | `0.89 GB` |
 | Raios (`GLM`) | `0.03 GB` |
 | **Total com 1 município** | **`0.92 GB`** |

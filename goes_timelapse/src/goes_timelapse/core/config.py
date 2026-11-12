@@ -1,14 +1,16 @@
+"""Runtime settings read from the add-on options."""
+
 from __future__ import annotations
+
+from dataclasses import dataclass
 import os
+from pathlib import Path
 import shutil
 import subprocess
-from dataclasses import dataclass
-from pathlib import Path
 
 from rasterio import Affine
 
 from goes_timelapse.core.logging_utils import resolve_log_level
-
 
 REMOTE_FILESYSTEM_TYPES = {
     "nfs",
@@ -45,6 +47,8 @@ def _env_path(name: str, default: str) -> Path:
 
 @dataclass(slots=True, frozen=True)
 class Settings:
+    """Paths, limits and NOAA endpoints for one run of the app."""
+
     host: str
     port: int
     goes_url: str
@@ -79,11 +83,12 @@ class Settings:
     transform: Affine
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls) -> Settings:
+        """Build settings from the add-on options file and environment."""
         package_dir = Path(__file__).resolve().parent.parent
         data_dir = _env_path("GOES_DATA_DIR", "/data/goes_timelapse")
         state_dir = _env_path("GOES_STATE_DIR", "/config/goes_timelapse/state")
-        work_dir = _env_path("GOES_WORK_DIR", "/tmp/goes_timelapse")
+        work_dir = _env_path("GOES_WORK_DIR", "/tmp/goes_timelapse")  # noqa: S108 - container-private /tmp
         requested_scratch_dir = _env_path(
             "GOES_SCRATCH_DIR",
             str(data_dir / "tmp"),
@@ -122,9 +127,7 @@ class Settings:
         return cls(
             host=os.getenv("GOES_HOST", "0.0.0.0"),
             port=_env_int("GOES_PORT", 8099),
-            goes_url=os.getenv(
-                "GOES_URL", "https://noaa-goes19.s3.amazonaws.com/"
-            ),
+            goes_url=os.getenv("GOES_URL", "https://noaa-goes19.s3.amazonaws.com/"),
             poll_minutes=_env_int("GOES_POLL_MINUTES", 2),
             frame_count=_env_int("GOES_FRAME_COUNT", 10),
             gif_fps=_env_int("GOES_GIF_FPS", 2),
@@ -170,6 +173,7 @@ class Settings:
         )
 
     def ensure_directories(self) -> None:
+        """Create every data, state and output directory."""
         for directory in (
             self.data_dir,
             self.state_dir,
@@ -186,6 +190,7 @@ class Settings:
         self._cleanup_stale_temp_dirs()
 
     def configure_runtime_environment(self) -> None:
+        """Point temp files at the scratch directory."""
         scratch_dir = str(self.scratch_dir)
         os.environ["TMPDIR"] = scratch_dir
         os.environ["TMP"] = scratch_dir
@@ -221,7 +226,6 @@ def _resolve_scratch_dir(
         )
     try:
         _ensure_writable_dir(requested_scratch_dir)
-        return requested_scratch_dir, None
     except OSError as err:
         _ensure_writable_dir(fallback_scratch_dir)
         return (
@@ -231,6 +235,7 @@ def _resolve_scratch_dir(
                 f"usando fallback '{fallback_scratch_dir}' ({err})"
             ),
         )
+    return requested_scratch_dir, None
 
 
 def _resolve_source_dir(
@@ -249,7 +254,6 @@ def _resolve_source_dir(
         )
     try:
         _ensure_writable_dir(requested_source_dir)
-        return requested_source_dir, None
     except OSError as err:
         _ensure_writable_dir(fallback_source_dir)
         return (
@@ -259,6 +263,7 @@ def _resolve_source_dir(
                 f"usando fallback '{fallback_source_dir}' ({err})"
             ),
         )
+    return requested_source_dir, None
 
 
 def _ensure_writable_dir(path: Path) -> None:

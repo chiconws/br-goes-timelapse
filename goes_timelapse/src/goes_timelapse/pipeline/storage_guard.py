@@ -1,7 +1,9 @@
+"""Free-space checks that pause downloads before a disk fills."""
+
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
+import shutil
 
 from goes_timelapse.core.config import Settings
 from goes_timelapse.pipeline.runtime_types import (
@@ -14,6 +16,7 @@ from goes_timelapse.pipeline.runtime_types import (
 
 
 def build_storage_checks(settings: Settings) -> dict[str, StorageCheck]:
+    """Check free space on every configured path."""
     return {
         "cache": build_storage_check(
             key="cache",
@@ -47,6 +50,7 @@ def build_storage_check(
     warning_free_bytes: int,
     blocking_free_bytes: int,
 ) -> StorageCheck:
+    """Check free space on one path."""
     usage_path = path if path.exists() else path.parent
     usage = shutil.disk_usage(usage_path)
     free_bytes = int(usage.free)
@@ -60,8 +64,7 @@ def build_storage_check(
         )
     elif free_bytes < warning_free_bytes:
         warning = (
-            f"{label} em '{path}' com pouco espaço "
-            f"({format_bytes(free_bytes)} livres)"
+            f"{label} em '{path}' com pouco espaço ({format_bytes(free_bytes)} livres)"
         )
 
     return StorageCheck(
@@ -76,10 +79,9 @@ def build_storage_check(
 
 
 def worst_staging_check(storage_checks: dict[str, StorageCheck]) -> StorageCheck | None:
+    """Return the staging check with the least free space."""
     staging_checks = [
-        storage_checks[key]
-        for key in ("source", "scratch")
-        if key in storage_checks
+        storage_checks[key] for key in ("source", "scratch") if key in storage_checks
     ]
     if not staging_checks:
         return None
@@ -87,6 +89,7 @@ def worst_staging_check(storage_checks: dict[str, StorageCheck]) -> StorageCheck
 
 
 def storage_warning_summary(storage_checks: dict[str, StorageCheck]) -> str | None:
+    """Join the storage warnings into one message, if any."""
     warnings: list[str] = []
     for check in storage_checks.values():
         if check.warning and check.warning not in warnings:
@@ -97,6 +100,7 @@ def storage_warning_summary(storage_checks: dict[str, StorageCheck]) -> str | No
 
 
 def blocking_storage_message(storage_checks: dict[str, StorageCheck]) -> str | None:
+    """Return the message of a blocking check, if any."""
     blocking_warnings = [
         check.warning
         for check in storage_checks.values()
@@ -108,6 +112,7 @@ def blocking_storage_message(storage_checks: dict[str, StorageCheck]) -> str | N
 
 
 def format_bytes(value: int) -> str:
+    """Format a byte count for the UI."""
     size = float(value)
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if size < 1024 or unit == "TB":

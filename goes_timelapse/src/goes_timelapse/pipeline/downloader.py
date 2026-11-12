@@ -1,14 +1,17 @@
+"""NOAA listing and partial downloads of ABI imagery and GLM flashes."""
+
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import json
+from pathlib import Path
 import re
 import socket
-from pathlib import Path
 from time import perf_counter
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 from urllib.parse import quote
 import xml.etree.ElementTree as ET
 
@@ -31,7 +34,6 @@ from goes_timelapse.pipeline.partial_read import (
     write_abi_crop,
 )
 
-
 LOGGER = get_logger(__name__)
 NODD_PRODUCT_PREFIX = "ABI-L1b-RadF"
 NODD_LISTING_PREFIX_TEMPLATE = (
@@ -48,8 +50,12 @@ REQUEST_HEADERS = {
     "Accept-Encoding": "identity",
     "User-Agent": "br-goes-timelapse/1.2.0",
 }
-LISTING_TIMEOUT = aiohttp.ClientTimeout(total=45, connect=15, sock_connect=15, sock_read=20)
-DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=None, connect=30, sock_connect=30, sock_read=900)
+LISTING_TIMEOUT = aiohttp.ClientTimeout(
+    total=45, connect=15, sock_connect=15, sock_read=20
+)
+DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(
+    total=None, connect=30, sock_connect=30, sock_read=900
+)
 
 
 class TransientHttpError(aiohttp.ClientError):
@@ -66,10 +72,17 @@ S3_XML_NAMESPACE = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
 
 
 class SessionLike(Protocol):
-    def get(self, url: Any, **kwargs: Any) -> Any: ...
+    """Minimal aiohttp session interface used by the downloaders."""
+
+    @property
+    def get(self) -> Callable[..., Any]:
+        """Start a GET request."""
+        ...
 
 
 class GlmSlotRecord(TypedDict):
+    """Flashes aggregated for one GLM slot."""
+
     slot_timestamp: str
     source_filenames: list[str]
     flashes: list[dict[str, float]]
@@ -77,6 +90,8 @@ class GlmSlotRecord(TypedDict):
 
 @dataclass(slots=True)
 class DownloadReport:
+    """Outcome of one refresh of a source."""
+
     kept_files: list[Path]
     downloaded_count: int
     attempted_count: int
@@ -93,12 +108,16 @@ class DownloadReport:
 
 @dataclass(slots=True, frozen=True)
 class AreaCrop:
+    """Destination crop of one municipality."""
+
     area_id: str
     bounds: BBox
     target_timestamps: tuple[str, ...]
 
 
 class GoesDownloader:
+    """Read the rows of ABI C02/C13 that cover each municipality."""
+
     def __init__(
         self,
         base_url: str,
@@ -108,6 +127,7 @@ class GoesDownloader:
         band: str = "C02",
         progress_callback: Callable[[dict[str, object]], None] | None = None,
     ):
+        """Configure the product, cache directory and limits."""
         self._base_url = base_url.rstrip("/") + "/"
         self._raw_dir = raw_dir
         self._raw_history = raw_history
@@ -122,13 +142,16 @@ class GoesDownloader:
         self._raw_dir.mkdir(parents=True, exist_ok=True)
 
     def output_filename(self, source_filename: str) -> str:
+        """Return the cached file name for a NOAA file name."""
         return f"{Path(source_filename).stem}.tif"
 
     def source_filename(self, output_filename: str) -> str:
+        """Return the NOAA file name for a cached file name."""
         return f"{Path(output_filename).stem}.nc"
 
     def parse_listing(self, xml_payload: str) -> list[str]:
-        root = ET.fromstring(xml_payload)
+        """Return the product file names in an S3 listing."""
+        root = ET.fromstring(xml_payload)  # noqa: S314 - NOAA S3 listing fetched over HTTPS
         keys: list[tuple[str, str]] = []
         for node in root.findall("s3:Contents", S3_XML_NAMESPACE):
             key_node = node.find("s3:Key", S3_XML_NAMESPACE)
@@ -149,9 +172,14 @@ class GoesDownloader:
         target_timestamps: tuple[str, ...] | None = None,
         areas: tuple[AreaCrop, ...] = (),
     ) -> DownloadReport:
+        """Fetch the missing slots for every crop."""
         started_at = perf_counter()
-        connector = aiohttp.TCPConnector(limit=DOWNLOAD_CONCURRENCY, family=socket.AF_INET)
-        slots_on_disk = {area.area_id: self._slots_on_disk(area.area_id) for area in areas}
+        connector = aiohttp.TCPConnector(
+            limit=DOWNLOAD_CONCURRENCY, family=socket.AF_INET
+        )
+        slots_on_disk = {
+            area.area_id: self._slots_on_disk(area.area_id) for area in areas
+        }
         missing_slots = tuple(
             {
                 slot
@@ -182,7 +210,9 @@ class GoesDownloader:
             source_filenames,
             target_timestamps=target_timestamps,
         )
-        candidate_outputs = [self.output_filename(filename) for filename in candidate_sources]
+        candidate_outputs = [
+            self.output_filename(filename) for filename in candidate_sources
+        ]
         latest_available = self._latest_available_output(
             source_filenames,
             target_timestamps=target_timestamps,
@@ -198,7 +228,11 @@ class GoesDownloader:
             (source_filename, area)
             for source_filename in candidate_sources
             for area in areas
-            if (slot := _slot_timestamp_for_output_filename(self.output_filename(source_filename)))
+            if (
+                slot := _slot_timestamp_for_output_filename(
+                    self.output_filename(source_filename)
+                )
+            )
             in area.target_timestamps
             and slot not in slots_on_disk[area.area_id]
         ]
@@ -254,7 +288,7 @@ class GoesDownloader:
             )
             try:
                 stats = await asyncio.to_thread(self._read_crop, source_filename, area)
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001 - one bad file must not stop the cycle
                 # The slot stays missing, so the next cycle tries it again.
                 failed_files.append(output_filename)
                 LOGGER.warning("Failed to read %s: %s", source_filename, err)
@@ -387,7 +421,8 @@ class GoesDownloader:
         selected = [
             filename
             for filename in source_filenames
-            if _slot_timestamp_for_output_filename(self.output_filename(filename)) in target_set
+            if _slot_timestamp_for_output_filename(self.output_filename(filename))
+            in target_set
         ]
         LOGGER.trace(
             "Selected imagery candidates for %s with targets=%s: %s",
@@ -404,7 +439,9 @@ class GoesDownloader:
         target_timestamps: tuple[str, ...] | None,
     ) -> str | None:
         if target_timestamps is None:
-            return self.output_filename(source_filenames[0]) if source_filenames else None
+            return (
+                self.output_filename(source_filenames[0]) if source_filenames else None
+            )
         target_set = set(target_timestamps)
         for filename in source_filenames:
             output_filename = self.output_filename(filename)
@@ -448,6 +485,8 @@ class GoesDownloader:
 
 
 class GlmDownloader:
+    """Read GLM flash coordinates and aggregate them per slot."""
+
     def __init__(
         self,
         base_url: str,
@@ -456,6 +495,7 @@ class GlmDownloader:
         *,
         progress_callback: Callable[[dict[str, object]], None] | None = None,
     ):
+        """Configure the cache directory and limits."""
         self._base_url = base_url.rstrip("/") + "/"
         self._raw_dir = raw_dir
         self._raw_history = raw_history
@@ -472,13 +512,15 @@ class GlmDownloader:
         self._raw_dir.mkdir(parents=True, exist_ok=True)
 
     def output_filename(self, source_filename: str) -> str:
+        """Return the cached slot file name for a NOAA file name."""
         slot_timestamp = self._slot_timestamp_for_source(source_filename)
         if slot_timestamp is None:
             raise ValueError(f"Cannot derive GLM slot for {source_filename}")
         return f"{slot_timestamp}_glm.json"
 
     def parse_listing(self, xml_payload: str) -> list[str]:
-        root = ET.fromstring(xml_payload)
+        """Return the GLM file names in an S3 listing."""
+        root = ET.fromstring(xml_payload)  # noqa: S314 - NOAA S3 listing fetched over HTTPS
         keys: list[tuple[str, str]] = []
         for node in root.findall("s3:Contents", S3_XML_NAMESPACE):
             key_node = node.find("s3:Key", S3_XML_NAMESPACE)
@@ -498,6 +540,7 @@ class GlmDownloader:
         download_missing: bool = True,
         target_timestamps: tuple[str, ...] | None = None,
     ) -> DownloadReport:
+        """Fetch and aggregate flashes for the missing slots."""
         started_at = perf_counter()
         connector = aiohttp.TCPConnector(limit=GLM_CONCURRENCY, family=socket.AF_INET)
         self._bytes_read = 0
@@ -526,7 +569,9 @@ class GlmDownloader:
                 latest_slot_output,
             )
             self._emit_progress(
-                phase="downloading" if download_missing and candidate_sources else "idle",
+                phase="downloading"
+                if download_missing and candidate_sources
+                else "idle",
                 attempted_count=len(candidate_sources),
                 completed_count=0,
                 failed_count=0,
@@ -548,7 +593,9 @@ class GlmDownloader:
                     failed_files=[],
                 )
 
-            if candidate_sources and not await self._layout_verified(session, candidate_sources[0]):
+            if candidate_sources and not await self._layout_verified(
+                session, candidate_sources[0]
+            ):
                 return DownloadReport(
                     kept_files=self._kept_raws_on_disk(),
                     downloaded_count=0,
@@ -565,7 +612,9 @@ class GlmDownloader:
             last_downloaded: str | None = None
             active_downloads: dict[str, dict[str, object]] = {}
             progress_lock = asyncio.Lock()
-            ready_for_conversion: dict[int, tuple[str, str, list[dict[str, float]] | None]] = {}
+            ready_for_conversion: dict[
+                int, tuple[str, str, list[dict[str, float]] | None]
+            ] = {}
             ready_for_conversion_event = asyncio.Event()
 
             def current_phase() -> str:
@@ -678,7 +727,7 @@ class GlmDownloader:
                         slot_output,
                         flashes,
                     )
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - one bad file must not stop the cycle
                     failed_files.append(filename)
                     LOGGER.warning("Failed to download %s: %s", filename, err)
                     await complete_active_download(filename=filename)
@@ -704,7 +753,9 @@ class GlmDownloader:
                 if flashes is None:
                     continue
 
-                await upsert_active_download(filename=source_filename, stage="converting")
+                await upsert_active_download(
+                    filename=source_filename, stage="converting"
+                )
                 try:
                     processed = self._merge_flashes_into_slot(source_filename, flashes)
                     downloaded_count += processed
@@ -712,7 +763,7 @@ class GlmDownloader:
                         filename=source_filename,
                         last_downloaded_name=slot_output if processed else None,
                     )
-                except Exception as err:
+                except Exception as err:  # noqa: BLE001 - one bad file must not stop the cycle
                     failed_files.append(source_filename)
                     LOGGER.warning("Failed to convert %s: %s", source_filename, err)
                     await complete_active_download(filename=source_filename)
@@ -747,11 +798,13 @@ class GlmDownloader:
                 f"{self._base_url}{source_key}",
                 user_agent=REQUEST_HEADERS["User-Agent"],
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - any failure makes the check inconclusive
             LOGGER.warning("GLM layout check inconclusive for %s: %s", filename, err)
             return False
         if direct != reference:
-            LOGGER.error("GLM layout changed, stopping GLM reads: mismatch in %s", filename)
+            LOGGER.error(
+                "GLM layout changed, stopping GLM reads: mismatch in %s", filename
+            )
             return False
         self._layout_checked_at = perf_counter()
         return True
@@ -762,10 +815,14 @@ class GlmDownloader:
         source_key: str,
     ) -> list[dict[str, float]]:
         latitude_chunks = parse_glm_node(
-            await self._get_range(session, source_key, GLM_LAT_NODE, GLM_LAT_NODE + GLM_NODE_SIZE)
+            await self._get_range(
+                session, source_key, GLM_LAT_NODE, GLM_LAT_NODE + GLM_NODE_SIZE
+            )
         )
         longitude_chunks = parse_glm_node(
-            await self._get_range(session, source_key, GLM_LON_NODE, GLM_LON_NODE + GLM_NODE_SIZE)
+            await self._get_range(
+                session, source_key, GLM_LON_NODE, GLM_LON_NODE + GLM_NODE_SIZE
+            )
         )
         ranges = {
             (start, end): await self._get_range(session, source_key, start, end)
@@ -794,12 +851,14 @@ class GlmDownloader:
                     _raise_for_response(response)
                     if response.status != 206:
                         raise ValueError(f"Range ignorado: HTTP {response.status}")
-                    data = await response.read()
+                    data: bytes = await response.read()
                 if len(data) != end - start:
-                    raise ValueError(f"Leitura curta: {len(data)} de {end - start} bytes")
+                    raise ValueError(
+                        f"Leitura curta: {len(data)} de {end - start} bytes"
+                    )
                 self._bytes_read += len(data)
                 self._requests += 1
-                return data
+                return data  # noqa: TRY300 - return inside the retry loop
             except DOWNLOAD_RETRYABLE_ERRORS:
                 if attempt >= DOWNLOAD_RETRY_ATTEMPTS:
                     raise
@@ -824,7 +883,9 @@ class GlmDownloader:
                         _raise_for_response(response)
                         payload = await response.text()
                     parsed = self.parse_listing(payload)
-                    LOGGER.trace("Fetched GLM listing prefix with %s file(s)", len(parsed))
+                    LOGGER.trace(
+                        "Fetched GLM listing prefix with %s file(s)", len(parsed)
+                    )
                     collected.update(parsed)
                     break
                 except DOWNLOAD_RETRYABLE_ERRORS as err:
@@ -851,7 +912,9 @@ class GlmDownloader:
             raise last_error
         return []
 
-    def _merge_flashes_into_slot(self, filename: str, flashes: list[dict[str, float]]) -> int:
+    def _merge_flashes_into_slot(
+        self, filename: str, flashes: list[dict[str, float]]
+    ) -> int:
         output_filename = self.output_filename(filename)
         destination = self._raw_dir / output_filename
         record = self._load_slot_record(destination)
@@ -885,8 +948,12 @@ class GlmDownloader:
             }
         payload = json.loads(path.read_text(encoding="utf-8"))
         return {
-            "slot_timestamp": str(payload.get("slot_timestamp") or parse_goes_slot_prefix(path.name)),
-            "source_filenames": [str(name) for name in (payload.get("source_filenames") or [])],
+            "slot_timestamp": str(
+                payload.get("slot_timestamp") or parse_goes_slot_prefix(path.name)
+            ),
+            "source_filenames": [
+                str(name) for name in (payload.get("source_filenames") or [])
+            ],
             "flashes": [
                 {"lat": float(item["lat"]), "lon": float(item["lon"])}
                 for item in (payload.get("flashes") or [])
@@ -934,12 +1001,17 @@ class GlmDownloader:
                     break
                 selected_slots.append(slot_timestamp)
                 selected_slot_set.add(slot_timestamp)
-            elif target_timestamps is not None and slot_timestamp not in selected_slot_set:
+            elif (
+                target_timestamps is not None
+                and slot_timestamp not in selected_slot_set
+            ):
                 continue
             processed = processed_by_slot.get(slot_timestamp)
             if processed is None:
-                record = self._load_slot_record(self._raw_dir / f"{slot_timestamp}_glm.json")
-                processed = set(str(name) for name in record["source_filenames"])
+                record = self._load_slot_record(
+                    self._raw_dir / f"{slot_timestamp}_glm.json"
+                )
+                processed = {str(name) for name in record["source_filenames"]}
                 processed_by_slot[slot_timestamp] = processed
             if filename in processed:
                 continue
@@ -1050,6 +1122,7 @@ def _slot_timestamp_for_output_filename(filename: str) -> str | None:
 
 
 def parse_goes_slot_prefix(filename: str) -> str | None:
+    """Return the slot timestamp of a GOES file name, or None."""
     prefix = Path(filename).name.split("_", 1)[0]
     if len(prefix) < 11 or not prefix[:11].isdigit():
         return None

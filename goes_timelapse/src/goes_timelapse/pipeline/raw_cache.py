@@ -1,27 +1,29 @@
+"""Cached raw frames: listing, lookup and pruning."""
+
 from __future__ import annotations
 
-import json
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
+import json
 from pathlib import Path
-from typing import Callable, Mapping
 
 from goes_timelapse.core.config import Settings
 from goes_timelapse.core.logging_utils import TraceLogger, get_logger
 from goes_timelapse.pipeline.downloader import GlmDownloader, GoesDownloader
 from goes_timelapse.pipeline.rendering import parse_goes_timestamp
 from goes_timelapse.pipeline.runtime_types import (
-    RawFileEntry,
     RAW_SOURCE_INFRARED,
     RAW_SOURCE_LABELS,
     RAW_SOURCE_LIGHTNING,
     RAW_SOURCE_VISIBLE,
+    RawFileEntry,
 )
-
 
 LOGGER = get_logger(__name__)
 
 
 def raw_files_for_source(settings: Settings, source_key: str) -> list[RawFileEntry]:
+    """List the cached files of a source with their timestamps."""
     raw_dir = settings.raw_dir / source_key
     files = sorted(
         raw_files_in_dir(raw_dir, source_key),
@@ -36,14 +38,19 @@ def raw_files_for_source(settings: Settings, source_key: str) -> list[RawFileEnt
             {
                 "filename": filename,
                 "size_bytes": stat.st_size,
-                "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
+                "modified_at": datetime.fromtimestamp(
+                    stat.st_mtime, tz=UTC
+                ).isoformat(),
                 "label": f"{filename} ({RAW_SOURCE_LABELS[source_key]})",
             }
         )
     return entries
 
 
-def all_raw_files(settings: Settings, source_keys: tuple[str, ...]) -> list[RawFileEntry]:
+def all_raw_files(
+    settings: Settings, source_keys: tuple[str, ...]
+) -> list[RawFileEntry]:
+    """List the cached files of several sources."""
     files: list[RawFileEntry] = []
     for source_key in source_keys:
         files.extend(raw_files_for_source(settings, source_key))
@@ -55,10 +62,18 @@ def all_raw_files(settings: Settings, source_keys: tuple[str, ...]) -> list[RawF
 
 
 def raw_timestamp_count(items: list[RawFileEntry]) -> int:
-    return len({timestamp for item in items if (timestamp := parse_goes_timestamp(item["filename"]))})
+    """Count distinct timestamps among cached files."""
+    return len(
+        {
+            timestamp
+            for item in items
+            if (timestamp := parse_goes_timestamp(item["filename"]))
+        }
+    )
 
 
 def raw_disk_usage_bytes(settings: Settings, source_keys: tuple[str, ...]) -> int:
+    """Return the bytes used by the cached files of these sources."""
     total = 0
     for source_key in source_keys:
         for item in raw_files_for_source(settings, source_key):
@@ -71,6 +86,7 @@ def available_raw_paths_by_source(
     area_id: str,
     is_valid_raw: Callable[[Path], bool],
 ) -> dict[str, dict[str, Path]]:
+    """Map each source to its cached files by timestamp."""
     paths_by_source: dict[str, dict[str, Path]] = {}
     for source_key in (RAW_SOURCE_VISIBLE, RAW_SOURCE_INFRARED):
         entries: dict[str, Path] = {}
@@ -93,6 +109,7 @@ def available_lightning_points_by_timestamp(
     settings: Settings,
     logger: TraceLogger,
 ) -> dict[str, tuple[tuple[float, float], ...]]:
+    """Load the cached GLM flash points per slot."""
     points_by_timestamp: dict[str, tuple[tuple[float, float], ...]] = {}
     for path in (settings.raw_dir / RAW_SOURCE_LIGHTNING).glob("*.json"):
         timestamp = parse_goes_timestamp(path.name)
@@ -126,6 +143,7 @@ def available_lightning_points_by_timestamp(
 
 
 def available_lightning_paths_by_timestamp(settings: Settings) -> dict[str, Path]:
+    """Map each GLM slot to its cached file."""
     paths: dict[str, Path] = {}
     for path in (settings.raw_dir / RAW_SOURCE_LIGHTNING).glob("*.json"):
         timestamp = parse_goes_timestamp(path.name)
@@ -143,6 +161,7 @@ def prune_raw_cache(
     keep_timestamps_by_source: dict[str, tuple[str, ...]],
     logger: TraceLogger,
 ) -> str | None:
+    """Delete cached files outside the timeline; return an error message, if any."""
     for source_key in source_keys:
         raw_dir = settings.raw_dir / source_key
         keep_timestamps = set(keep_timestamps_by_source[source_key])
@@ -196,14 +215,20 @@ def prune_raw_cache(
 
 
 def latest_kept_timestamp(paths: list[Path]) -> str | None:
+    """Return the newest valid timestamp among paths."""
     timestamps = [parse_goes_timestamp(path.name) for path in paths]
-    usable = [timestamp for timestamp in timestamps if goes_timestamp_to_datetime(timestamp) is not None]
+    usable = [
+        timestamp
+        for timestamp in timestamps
+        if goes_timestamp_to_datetime(timestamp) is not None
+    ]
     if not usable:
         return None
     return max(usable)
 
 
 def raw_files_in_dir(raw_dir: Path, source_key: str) -> list[Path]:
+    """List the cached files of a source under raw_dir."""
     if source_key == RAW_SOURCE_LIGHTNING:
         return list(raw_dir.glob("*.json"))
     # Direct children are files from older versions; pruning clears them as they age out.
@@ -211,6 +236,7 @@ def raw_files_in_dir(raw_dir: Path, source_key: str) -> list[Path]:
 
 
 def goes_timestamp_to_datetime(timestamp: str) -> datetime | None:
+    """Parse a GOES 'sYYYYJJJHHMM' timestamp, or None if invalid."""
     if len(timestamp) < 11:
         return None
     try:

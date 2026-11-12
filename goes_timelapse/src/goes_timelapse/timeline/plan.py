@@ -1,3 +1,5 @@
+"""Frame timeline: which slots to show and how to blend day and night."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -9,7 +11,6 @@ from goes_timelapse.timeline.solar import (
     sunrise_transition_alpha,
     sunset_transition_alpha,
 )
-
 
 SOURCE_VISIBLE = "visible"
 SOURCE_INFRARED = "infrared"
@@ -23,6 +24,8 @@ PHASE_SUNSET_BLEND = "sunset_blend"
 
 @dataclass(slots=True, frozen=True)
 class TimelineFrame:
+    """One frame of the timeline and the sources it uses."""
+
     slot_timestamp: str
     phase: str
     primary_source: str
@@ -33,11 +36,14 @@ class TimelineFrame:
 
 @dataclass(slots=True, frozen=True)
 class AreaTimelinePlan:
+    """Ordered frames of one municipality."""
+
     area_id: str
     frames: tuple[TimelineFrame, ...]
 
     @property
     def slot_timestamps(self) -> tuple[str, ...]:
+        """Return the slot timestamps of every frame."""
         return tuple(frame.slot_timestamp for frame in self.frames)
 
 
@@ -52,6 +58,7 @@ def build_area_timeline_plan(
     slot_minutes: int,
     blend_weights: tuple[float, ...] = DEFAULT_TRANSITION_BLEND_WEIGHTS,
 ) -> AreaTimelinePlan:
+    """Choose the frames for a municipality around now."""
     if frame_count <= 0:
         return AreaTimelinePlan(area_id=area_id, frames=())
 
@@ -144,6 +151,7 @@ def build_area_timeline_plan(
 
 
 def floor_to_slot(moment_utc: datetime, *, slot_minutes: int) -> datetime:
+    """Round a UTC time down to the slot grid."""
     if moment_utc.tzinfo is None:
         moment_utc = moment_utc.replace(tzinfo=UTC)
     else:
@@ -153,6 +161,7 @@ def floor_to_slot(moment_utc: datetime, *, slot_minutes: int) -> datetime:
 
 
 def datetime_to_slot_timestamp(moment_utc: datetime) -> str:
+    """Format a UTC time as a GOES slot timestamp."""
     if moment_utc.tzinfo is None:
         moment_utc = moment_utc.replace(tzinfo=UTC)
     else:
