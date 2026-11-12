@@ -1,5 +1,12 @@
 # Histórico de mudanças
 
+## 1.2.1
+
+- Remove as opções `scratch_dir` e `raw_history`, que a leitura parcial da 1.2.0 deixou sem efeito. O Supervisor ignora os valores antigos.
+- Deixa de gravar os snippets YAML de card em `/config/goes_timelapse/lovelace/`. Os arquivos que já existem podem ser apagados.
+- O aviso de espaço em disco passa a considerar só o `data_dir`, onde ficam as imagens.
+- Simplifica o código interno sem mudar as animações geradas.
+
 ## 1.2.0
 
 - Passa a ler por HTTP Range só as linhas de `C02` e `C13` que cobrem cada município e só as coordenadas dos raios do `GLM`, reduzindo o tráfego de cerca de `33 GB/dia` para cerca de `0.9 GB/dia` por município.
