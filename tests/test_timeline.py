@@ -41,7 +41,6 @@ def test_build_area_timeline_plan_generates_visible_slots_during_day():
         frame_count=3,
         end_moment_utc=midday,
         solar_margin_hours=0,
-        slot_minutes=10,
     )
 
     assert len(plan.frames) == 3
@@ -70,7 +69,6 @@ def test_build_area_timeline_plan_generates_infrared_slots_during_night():
         frame_count=3,
         end_moment_utc=predawn,
         solar_margin_hours=0,
-        slot_minutes=10,
     )
 
     assert len(plan.frames) == 3
@@ -97,7 +95,6 @@ def test_build_area_timeline_plan_generates_sunrise_blend_slots():
         frame_count=4,
         end_moment_utc=slots[-1],
         solar_margin_hours=0,
-        slot_minutes=10,
     )
 
     assert [frame.phase for frame in plan.frames] == [PHASE_SUNRISE_BLEND] * 4
@@ -123,7 +120,6 @@ def test_build_area_timeline_plan_generates_sunset_blend_slots():
         frame_count=4,
         end_moment_utc=slots[-1],
         solar_margin_hours=0,
-        slot_minutes=10,
     )
 
     assert [frame.phase for frame in plan.frames] == [PHASE_SUNSET_BLEND] * 4

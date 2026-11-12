@@ -15,25 +15,25 @@ from goes_timelapse.pipeline.runtime_types import (
     RAW_SOURCE_INFRARED,
     RAW_SOURCE_LIGHTNING,
     RAW_SOURCE_VISIBLE,
-    SLOT_MINUTES,
 )
 from goes_timelapse.timeline import (
-    DEFAULT_TRANSITION_BLEND_WEIGHTS,
+    SLOT_MINUTES,
     AreaTimelinePlan,
     build_area_timeline_plan,
     floor_to_slot,
 )
 
-TRANSITION_BLEND_WEIGHTS = DEFAULT_TRANSITION_BLEND_WEIGHTS
 LOGGER = get_logger(__name__)
+SOURCE_SHORT_LABELS = {
+    RAW_SOURCE_VISIBLE: "B2",
+    RAW_SOURCE_INFRARED: "B13",
+    RAW_SOURCE_LIGHTNING: "GLM",
+}
 
 
 def timeline_reference_moment() -> datetime:
     """Return the current UTC time the timeline is built from."""
-    return floor_to_slot(
-        datetime.now(UTC) - timedelta(minutes=SLOT_MINUTES),
-        slot_minutes=SLOT_MINUTES,
-    )
+    return floor_to_slot(datetime.now(UTC) - timedelta(minutes=SLOT_MINUTES))
 
 
 def build_area_timeline_plan_for_area(
@@ -53,8 +53,6 @@ def build_area_timeline_plan_for_area(
         frame_count=settings.frame_count,
         end_moment_utc=reference_moment,
         solar_margin_hours=settings.solar_margin_hours,
-        slot_minutes=SLOT_MINUTES,
-        blend_weights=TRANSITION_BLEND_WEIGHTS,
     )
     LOGGER.trace(
         "Timeline plan for %s built at %s with %s frame(s): %s",
@@ -125,17 +123,8 @@ def build_download_plan_reason(
         }[source_key]
 
     slot_count = len(target_timestamps)
-    short_label = source_short_label(source_key)
+    short_label = SOURCE_SHORT_LABELS[source_key]
     return f"Ativo em {slot_count} {pluralize_slot(slot_count)} úteis de {short_label} na timeline atual"
-
-
-def source_short_label(source_key: str) -> str:
-    """Return the short UI label of a source."""
-    return {
-        RAW_SOURCE_VISIBLE: "B2",
-        RAW_SOURCE_INFRARED: "B13",
-        RAW_SOURCE_LIGHTNING: "GLM",
-    }[source_key]
 
 
 def build_frame_specs_from_timeline(

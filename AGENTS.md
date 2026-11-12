@@ -14,7 +14,7 @@ Add-on folder: `goes_timelapse/` (`config.yaml`, `build.yaml`, `Dockerfile`, `ro
 - `core/`: settings from add-on options (`config.py`), SQLite state store (`state.py`), models, logging.
 - `data/`: municipality catalog and IBGE geometry (`assets/*.json.gz`).
 - `pipeline/`: NOAA listing and partial downloads (`downloader.py`, `partial_read.py`), raw cache, rendering, storage guard, the refresh loop (`service.py`).
-- `timeline/`: frame plan and day/night logic (`solar.py`).
+- `timeline.py`: frame plan and day/night logic.
 - `static/`: frontend (plain JS/CSS, no build step).
 - `scripts/build_area_catalog.py`: rebuilds `assets/areas.json.gz` from IBGE data.
 - `tests/`: pytest suite; `tests/helpers.py` writes synthetic netCDF/GeoTIFF fixtures.

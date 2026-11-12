@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 import hashlib
 import json
 import math
@@ -76,20 +76,20 @@ def parse_goes_timestamp(filename: str) -> str:
     return name.split("_")[0]
 
 
+def goes_timestamp_to_datetime(timestamp: str) -> datetime | None:
+    """Parse a GOES 'YYYYJJJHHMM' slot timestamp, or None if invalid."""
+    try:
+        return datetime.strptime(timestamp[:11], "%Y%j%H%M").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
 def format_capture_time(filename: str) -> str:
     """Format a GOES file's start time for the frame label."""
-    timestamp = parse_goes_timestamp(filename)
-    if len(timestamp) < 11:
+    moment = goes_timestamp_to_datetime(parse_goes_timestamp(filename))
+    if moment is None:
         return "Unknown capture time"
-
-    year = int(timestamp[0:4])
-    day_of_year = int(timestamp[4:7])
-    hour = int(timestamp[7:9])
-    minute = int(timestamp[9:11])
-    capture_date = datetime(year, 1, 1, hour=hour, minute=minute, tzinfo=UTC)
-    capture_date = capture_date + timedelta(days=day_of_year - 1)
-    local_time = capture_date.astimezone(BRAZIL_TZ)
-    return local_time.strftime("%d/%m/%Y %H:%M")
+    return moment.astimezone(BRAZIL_TZ).strftime("%d/%m/%Y %H:%M")
 
 
 class AreaRenderer:

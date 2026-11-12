@@ -44,7 +44,7 @@ def test_is_within_visible_window_marks_time_inside_margin_as_open():
         margin_hours=2,
     )
 
-    assert result.is_open is True
+    assert result is True
 
 
 def test_sunset_transition_slots_returns_four_utc_slots():

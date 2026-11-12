@@ -33,8 +33,11 @@ from goes_timelapse.pipeline.partial_read import (
     valid_flash_points,
     write_abi_crop,
 )
-from goes_timelapse.pipeline.runtime_types import SLOT_MINUTES
-from goes_timelapse.timeline.plan import datetime_to_slot_timestamp, floor_to_slot
+from goes_timelapse.timeline import (
+    SLOT_MINUTES,
+    datetime_to_slot_timestamp,
+    floor_to_slot,
+)
 
 LOGGER = get_logger(__name__)
 ABI_PRODUCT = "ABI-L1b-RadF"
@@ -638,9 +641,7 @@ class GlmDownloader(_NoaaDownloader):
 
 def _listing_hours(missing_slots: tuple[str, ...]) -> list[datetime]:
     """Recent hours plus the ones a backfill needs; listing all 24 every poll would be wasteful."""
-    now = floor_to_slot(
-        _utc_now() - timedelta(minutes=SLOT_MINUTES), slot_minutes=SLOT_MINUTES
-    )
+    now = floor_to_slot(_utc_now() - timedelta(minutes=SLOT_MINUTES))
     recent = (now - timedelta(hours=offset) for offset in range(LOOKBACK_HOURS))
     backfill = (
         datetime.strptime(slot, "%Y%j%H%M").replace(tzinfo=UTC)
@@ -677,7 +678,7 @@ def _slot_of(filename: str) -> str | None:
     moment = _filename_timestamp(filename)
     if moment is None:
         return None
-    return datetime_to_slot_timestamp(floor_to_slot(moment, slot_minutes=SLOT_MINUTES))
+    return datetime_to_slot_timestamp(floor_to_slot(moment))
 
 
 def _utc_now() -> datetime:
