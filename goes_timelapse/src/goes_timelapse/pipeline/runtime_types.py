@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 from typing_extensions import TypedDict
 
@@ -19,11 +18,6 @@ RAW_SOURCE_LABELS = {
 
 SLOT_MINUTES = 10
 
-CACHE_WARNING_FREE_BYTES = 20 * 1024 * 1024 * 1024
-CACHE_BLOCKING_FREE_BYTES = 2 * 1024 * 1024 * 1024
-STAGING_WARNING_FREE_BYTES = 8 * 1024 * 1024 * 1024
-STAGING_BLOCKING_FREE_BYTES = 2 * 1024 * 1024 * 1024
-
 
 @dataclass(slots=True, frozen=True)
 class DownloadSourcePlan:
@@ -35,19 +29,6 @@ class DownloadSourcePlan:
     should_download: bool
     target_timestamps: tuple[str, ...]
     reason: str
-
-
-@dataclass(slots=True, frozen=True)
-class StorageCheck:
-    """Free space on one storage path."""
-
-    key: str
-    label: str
-    path: Path
-    free_bytes: int
-    total_bytes: int
-    warning: str | None
-    is_blocking: bool
 
 
 class ActiveDownloadEntry(TypedDict):

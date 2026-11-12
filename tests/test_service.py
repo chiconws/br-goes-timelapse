@@ -21,8 +21,8 @@ from goes_timelapse.pipeline.service import (
     RAW_SOURCE_VISIBLE,
     DownloadSourcePlan,
     GoesTimelapseService,
-    StorageCheck,
 )
+from goes_timelapse.pipeline.storage_guard import StorageCheck
 from goes_timelapse.timeline import (
     PHASE_SUNRISE_BLEND,
     PHASE_SUNSET_BLEND,
@@ -294,59 +294,6 @@ def test_available_raw_paths_include_nonempty_files_without_opening_raster(
     state_store.close()
 
     assert available[RAW_SOURCE_VISIBLE] == {"20260701800": raw_path}
-
-
-def test_status_snapshot_reports_staging_storage_pressure(settings):
-    """Test status snapshot reports staging storage pressure."""
-    catalog = AreaCatalog.from_path(settings.catalog_path)
-    state_store = StateStore(settings.db_path)
-    service = GoesTimelapseService(
-        settings=settings,
-        catalog=catalog,
-        state_store=state_store,
-        start_background_tasks=False,
-    )
-
-    service._storage_checks = lambda: {
-        "cache": StorageCheck(
-            key="cache",
-            label="Cache bruto",
-            path=settings.data_dir,
-            free_bytes=30 * 1024 * 1024 * 1024,
-            total_bytes=100 * 1024 * 1024 * 1024,
-            warning=None,
-            is_blocking=False,
-        ),
-        "source": StorageCheck(
-            key="source",
-            label="Staging de download",
-            path=settings.source_dir,
-            free_bytes=9 * 1024 * 1024 * 1024,
-            total_bytes=20 * 1024 * 1024 * 1024,
-            warning=None,
-            is_blocking=False,
-        ),
-        "scratch": StorageCheck(
-            key="scratch",
-            label="Scratch de conversão",
-            path=settings.scratch_dir,
-            free_bytes=512 * 1024 * 1024,
-            total_bytes=20 * 1024 * 1024 * 1024,
-            warning=(
-                f"Scratch de conversão em '{settings.scratch_dir}' "
-                "sem espaço suficiente (512.0 MB livres)"
-            ),
-            is_blocking=True,
-        ),
-    }
-
-    snapshot = service.status_snapshot()
-    state_store.close()
-
-    assert snapshot["disk_free_bytes"] == 30 * 1024 * 1024 * 1024
-    assert snapshot["staging_free_bytes"] == 512 * 1024 * 1024
-    assert snapshot["staging_path"] == str(settings.scratch_dir)
-    assert "Scratch de conversão" in str(snapshot["disk_warning"])
 
 
 def test_process_area_rebuilds_existing_media_when_frames_are_available(
@@ -1058,8 +1005,6 @@ def test_prune_raw_cache_uses_timeline_keep_set_for_visible_files(
 
     visible_dir = adjusted_settings.raw_dir / "visible"
     visible_dir.mkdir(parents=True, exist_ok=True)
-    source_visible_dir = adjusted_settings.source_dir / "visible"
-    source_visible_dir.mkdir(parents=True, exist_ok=True)
 
     for timestamp in (
         "20260701850",
@@ -1068,9 +1013,7 @@ def test_prune_raw_cache_uses_timeline_keep_set_for_visible_files(
         "20260701820",
     ):
         visible_name = f"OR_ABI-L1b-RadF-M6C02_G19_s{timestamp}00_e{timestamp}52_c{timestamp}56.tif"
-        source_name = visible_name.replace(".tif", ".nc")
         (visible_dir / visible_name).write_bytes(b"visible")
-        (source_visible_dir / source_name).write_bytes(b"source")
 
     area = catalog.get("municipio-3205309")
     assert area is not None
@@ -1088,11 +1031,6 @@ def test_prune_raw_cache_uses_timeline_keep_set_for_visible_files(
         "OR_ABI-L1b-RadF-M6C02_G19_s2026070183000_e2026070183052_c2026070183056.tif",
         "OR_ABI-L1b-RadF-M6C02_G19_s2026070184000_e2026070184052_c2026070184056.tif",
         "OR_ABI-L1b-RadF-M6C02_G19_s2026070185000_e2026070185052_c2026070185056.tif",
-    ]
-    assert sorted(path.name for path in source_visible_dir.glob("*.nc")) == [
-        "OR_ABI-L1b-RadF-M6C02_G19_s2026070183000_e2026070183052_c2026070183056.nc",
-        "OR_ABI-L1b-RadF-M6C02_G19_s2026070184000_e2026070184052_c2026070184056.nc",
-        "OR_ABI-L1b-RadF-M6C02_G19_s2026070185000_e2026070185052_c2026070185056.nc",
     ]
     state_store.close()
 
@@ -1206,12 +1144,8 @@ def test_prune_raw_cache_keeps_global_night_history_and_drops_visible_day_frames
 
     visible_dir = adjusted_settings.raw_dir / "visible"
     infrared_dir = adjusted_settings.raw_dir / "infrared"
-    source_visible_dir = adjusted_settings.source_dir / "visible"
-    source_infrared_dir = adjusted_settings.source_dir / "infrared"
     visible_dir.mkdir(parents=True, exist_ok=True)
     infrared_dir.mkdir(parents=True, exist_ok=True)
-    source_visible_dir.mkdir(parents=True, exist_ok=True)
-    source_infrared_dir.mkdir(parents=True, exist_ok=True)
 
     timestamps = ("20260701800", "20260701810", "20260701820")
     for timestamp in timestamps:
@@ -1219,12 +1153,6 @@ def test_prune_raw_cache_keeps_global_night_history_and_drops_visible_day_frames
         infrared_name = f"OR_ABI-L1b-RadF-M6C13_G19_s{timestamp}00_e{timestamp}52_c{timestamp}56.tif"
         (visible_dir / visible_name).write_bytes(b"visible")
         (infrared_dir / infrared_name).write_bytes(b"infrared")
-        (source_visible_dir / visible_name.replace(".tif", ".nc")).write_bytes(
-            b"source-visible"
-        )
-        (source_infrared_dir / infrared_name.replace(".tif", ".nc")).write_bytes(
-            b"source-infrared"
-        )
 
     monkeypatch.setattr(
         service,
@@ -1243,7 +1171,6 @@ def test_prune_raw_cache_keeps_global_night_history_and_drops_visible_day_frames
         "OR_ABI-L1b-RadF-M6C13_G19_s2026070181000_e2026070181052_c2026070181056.tif",
         "OR_ABI-L1b-RadF-M6C13_G19_s2026070182000_e2026070182052_c2026070182056.tif",
     ]
-    assert list(source_visible_dir.glob("*.nc")) == []
     state_store.close()
 
 
@@ -1631,40 +1558,18 @@ async def test_refresh_raw_frames_pauses_when_storage_is_critically_low(
         fail_refresh_latest,
     )
     monkeypatch.setattr(
-        service,
-        "_storage_checks",
-        lambda: {
-            "cache": StorageCheck(
-                key="cache",
-                label="Cache bruto",
-                path=settings.data_dir,
-                free_bytes=256 * 1024 * 1024,
-                total_bytes=100 * 1024 * 1024 * 1024,
-                warning=(
-                    f"Cache bruto em '{settings.data_dir}' "
-                    "sem espaço suficiente (256.0 MB livres)"
-                ),
-                is_blocking=True,
+        service_module,
+        "cache_storage_check",
+        lambda settings_arg: StorageCheck(
+            path=settings.data_dir,
+            free_bytes=256 * 1024 * 1024,
+            total_bytes=100 * 1024 * 1024 * 1024,
+            warning=(
+                f"Cache bruto em '{settings.data_dir}' "
+                "sem espaço suficiente (256.0 MB livres)"
             ),
-            "source": StorageCheck(
-                key="source",
-                label="Staging de download",
-                path=settings.source_dir,
-                free_bytes=9 * 1024 * 1024 * 1024,
-                total_bytes=20 * 1024 * 1024 * 1024,
-                warning=None,
-                is_blocking=False,
-            ),
-            "scratch": StorageCheck(
-                key="scratch",
-                label="Scratch de conversão",
-                path=settings.scratch_dir,
-                free_bytes=9 * 1024 * 1024 * 1024,
-                total_bytes=20 * 1024 * 1024 * 1024,
-                warning=None,
-                is_blocking=False,
-            ),
-        },
+            is_blocking=True,
+        ),
     )
 
     await service.refresh_raw_frames()

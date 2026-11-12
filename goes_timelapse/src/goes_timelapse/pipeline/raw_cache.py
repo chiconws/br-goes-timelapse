@@ -173,18 +173,6 @@ def prune_raw_cache(
                 deleted_files.append(file_path.name)
                 file_path.unlink(missing_ok=True)
 
-        source_dir = settings.source_dir / source_key
-        for file_path in source_dir.glob("*.nc"):
-            output_name = downloaders[source_key].output_filename(file_path.name)
-            if parse_goes_timestamp(output_name) not in keep_timestamps:
-                deleted_files.append(file_path.name)
-                file_path.unlink(missing_ok=True)
-        for file_path in source_dir.glob("*.nc.part"):
-            source_name = file_path.name.removesuffix(".part")
-            output_name = downloaders[source_key].output_filename(source_name)
-            if parse_goes_timestamp(output_name) not in keep_timestamps:
-                deleted_files.append(file_path.name)
-                file_path.unlink(missing_ok=True)
         if deleted_files:
             logger.info(
                 "Pruned %s files for %s outside retention window: %s",

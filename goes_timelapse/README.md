@@ -81,21 +81,18 @@ data_dir/
 - Remover um município apaga as pastas dele e mantém as dos demais.
 - O app guarda apenas os quadros da timeline atual. Cada GeoTIFF ocupa cerca de `50 a 100 KB`.
 - `state_dir` guarda o `state.db`, que deve ficar em armazenamento confiável.
-- `scratch_dir` guarda temporários. Com a leitura parcial, ele é pouco usado.
 
 Padrão atual:
 
 ```yaml
 data_dir: /data/goes_timelapse
 state_dir: /config/goes_timelapse/state
-scratch_dir: /data/goes_timelapse/tmp
 ```
 
 Para guardar o cache em outro disco:
 
 ```yaml
 data_dir: /media/SEU_DISCO/goes_timelapse
-scratch_dir: /media/SEU_DISCO/goes_timelapse/tmp
 state_dir: /config/goes_timelapse/state
 ```
 
