@@ -19,9 +19,7 @@ from goes_timelapse.core.state import StateStore
 from goes_timelapse.data.catalog import AreaCatalog
 from goes_timelapse.pipeline.service import DownloadsSnapshot, GoesTimelapseService
 
-STATIC_ASSET_VERSION = "20261101-1"
-STATIC_APP_JS_ROUTE = f"/static/app-{STATIC_ASSET_VERSION}.js"
-STATIC_STYLES_ROUTE = f"/static/styles-{STATIC_ASSET_VERSION}.css"
+STATIC_ASSET_VERSION = "20261111-1"
 
 
 class MarkerPayload(BaseModel):
@@ -31,7 +29,7 @@ class MarkerPayload(BaseModel):
     lon: float
 
 
-def create_app(  # noqa: C901 - FastAPI routes are closures over the service
+def create_app(
     settings: Settings | None = None,
     *,
     start_background_tasks: bool = True,
@@ -40,10 +38,7 @@ def create_app(  # noqa: C901 - FastAPI routes are closures over the service
     app_settings = settings or Settings.from_env()
     configure_logging(app_settings.log_level)
     static_dir = Path(__file__).resolve().parent / "static"
-    index_path = static_dir / "index.html"
-    app_js_path = static_dir / "app.js"
-    styles_path = static_dir / "styles.css"
-    index_template = index_path.read_text(encoding="utf-8")
+    index_template = (static_dir / "index.html").read_text(encoding="utf-8")
     no_store_headers = {"Cache-Control": "no-store, no-cache, must-revalidate"}
 
     @asynccontextmanager
@@ -77,50 +72,10 @@ def create_app(  # noqa: C901 - FastAPI routes are closures over the service
 
     @app.get("/")
     async def index(request: Request) -> HTMLResponse:
-        base_href = _base_href_for_request(request)
-        rendered_index = (
-            index_template.replace("__BASE_PATH__", base_href)
-            .replace(
-                "__STYLE_HREF__", f"{base_href}static/styles-{STATIC_ASSET_VERSION}.css"
-            )
-            .replace(
-                "__SCRIPT_CORE_SRC__",
-                f"{base_href}static/app-core.js?v={STATIC_ASSET_VERSION}",
-            )
-            .replace(
-                "__SCRIPT_RENDER_SRC__",
-                f"{base_href}static/app-render.js?v={STATIC_ASSET_VERSION}",
-            )
-            .replace(
-                "__SCRIPT_ACTIONS_SRC__",
-                f"{base_href}static/app-actions.js?v={STATIC_ASSET_VERSION}",
-            )
-            .replace(
-                "__SCRIPT_SRC__", f"{base_href}static/app-{STATIC_ASSET_VERSION}.js"
-            )
-        )
-        return HTMLResponse(
-            rendered_index,
-            headers=no_store_headers,
-        )
-
-    @app.get(STATIC_APP_JS_ROUTE)
-    @app.get("/static/app.js")
-    async def static_app_js() -> FileResponse:
-        return FileResponse(
-            app_js_path,
-            media_type="application/javascript; charset=utf-8",
-            headers=no_store_headers,
-        )
-
-    @app.get(STATIC_STYLES_ROUTE)
-    @app.get("/static/styles.css")
-    async def static_styles() -> FileResponse:
-        return FileResponse(
-            styles_path,
-            media_type="text/css; charset=utf-8",
-            headers=no_store_headers,
-        )
+        rendered_index = index_template.replace(
+            "__BASE_PATH__", _base_href_for_request(request)
+        ).replace("__ASSET_VERSION__", STATIC_ASSET_VERSION)
+        return HTMLResponse(rendered_index, headers=no_store_headers)
 
     @app.get("/static/{asset_path:path}")
     async def static_asset(asset_path: str) -> FileResponse:
@@ -157,22 +112,13 @@ def create_app(  # noqa: C901 - FastAPI routes are closures over the service
         service: GoesTimelapseService = request.app.state.service
         return [_area_payload(area) for area in service.search(q)]
 
-    @app.get("/api/municipalities")
-    async def municipalities_alias(
-        request: Request, q: str = ""
-    ) -> list[dict[str, object]]:
-        service: GoesTimelapseService = request.app.state.service
-        return [_area_payload(area) for area in service.search(q)]
-
     @app.get("/api/tracked")
     async def tracked(request: Request) -> list[dict[str, object]]:
         service: GoesTimelapseService = request.app.state.service
         items: list[dict[str, object]] = []
         for area in service.tracked():
-            media_exists = (
-                bool(area.media_path) and service.media_path(area.area_id).exists()
-            )
             media_path = service.media_path(area.area_id)
+            media_exists = media_path.exists()
             media_version = media_path.stat().st_mtime_ns if media_exists else None
             items.append(
                 {
@@ -200,7 +146,6 @@ def create_app(  # noqa: C901 - FastAPI routes are closures over the service
                         else None
                     ),
                     "media_version": media_version,
-                    "snippet_url": f"api/snippets/{area.area_id}",
                 }
             )
         return items
@@ -270,17 +215,6 @@ def create_app(  # noqa: C901 - FastAPI routes are closures over the service
         service: GoesTimelapseService = request.app.state.service
         await service.remove_tracked(area_id)
         return {"removed": area_id}
-
-    @app.get("/api/snippets/{area_id}")
-    async def snippet(request: Request, area_id: str) -> dict[str, object]:
-        service: GoesTimelapseService = request.app.state.service
-        try:
-            text = service.snippet_text(area_id)
-        except FileNotFoundError as err:
-            raise HTTPException(
-                status_code=404, detail="Snippet não encontrado"
-            ) from err
-        return {"area_id": area_id, "snippet": text}
 
     @app.get("/api/media/{area_id}")
     async def media(request: Request, area_id: str) -> FileResponse:

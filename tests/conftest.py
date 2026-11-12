@@ -73,7 +73,6 @@ def build_settings(tmp_path: Path) -> Settings:
         processed_dir=tmp_path / "data" / "processed",
         geometry_cache_dir=geometry_cache_dir,
         media_dir=tmp_path / "media",
-        snippets_dir=tmp_path / "config" / "goes_timelapse" / "lovelace",
         db_path=tmp_path / "state" / "state.db",
         catalog_path=catalog_path,
         state_boundaries_path=state_boundaries_path,

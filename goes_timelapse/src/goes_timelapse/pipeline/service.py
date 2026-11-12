@@ -15,7 +15,7 @@ from typing_extensions import TypedDict
 
 from goes_timelapse.core.config import Settings
 from goes_timelapse.core.logging_utils import get_logger
-from goes_timelapse.core.models import AreaCatalogEntry, RenderedArea, TrackedArea
+from goes_timelapse.core.models import AreaCatalogEntry, TrackedArea
 from goes_timelapse.core.state import StateStore
 from goes_timelapse.data.catalog import AreaCatalog
 from goes_timelapse.data.ibge import IbgeGeometryStore
@@ -43,7 +43,6 @@ from goes_timelapse.pipeline.rendering import (
     FrameSpec,
     WebpBuilder,
     goes_timestamp_to_datetime,
-    write_lovelace_snippet,
 )
 from goes_timelapse.pipeline.runtime_types import (
     RAW_SOURCE_INFRARED,
@@ -301,13 +300,6 @@ class GoesTimelapseService:
     def search(self, query: str) -> list[AreaCatalogEntry]:
         """Search the municipality catalog."""
         return self.catalog.search(query)
-
-    def snippet_text(self, area_id: str) -> str:
-        """Return the Lovelace snippet for a municipality."""
-        snippet_path = self.settings.snippets_dir / f"{area_id}.yaml"
-        if not snippet_path.exists():
-            raise FileNotFoundError(area_id)
-        return snippet_path.read_text(encoding="utf-8")
 
     def media_path(self, area_id: str) -> Path:
         """Return the published WebP path for a municipality."""
@@ -582,14 +574,14 @@ class GoesTimelapseService:
             finally:
                 self._queue.task_done()
 
-    def _process_area(self, area_id: str) -> RenderedArea | None:
+    def _process_area(self, area_id: str) -> None:
         area = self.catalog.get(area_id)
         if area is None:
             self._set_area_status(area_id, "error", last_error="Área não encontrada")
-            return None
+            return
         tracked = self.state_store.get_tracked(area_id)
         if tracked is None:
-            return None
+            return
 
         frame_specs = self._build_frame_specs(area)
         LOGGER.trace(
@@ -603,7 +595,7 @@ class GoesTimelapseService:
                 self._set_area_status(area_id, "ready", last_error=None)
             else:
                 self._set_area_status(area_id, "queued", last_error=None)
-            return None
+            return
 
         self._set_area_status(area_id, "processing", last_error=None)
         try:
@@ -627,14 +619,9 @@ class GoesTimelapseService:
                 self._set_area_status(
                     area_id, "error", last_error="Nenhum quadro foi renderizado"
                 )
-                return None
+                return
 
             media_path = self.webp_builder.build(area_id, png_paths)
-            snippet_path = write_lovelace_snippet(
-                self.settings.snippets_dir,
-                area,
-                area_id,
-            )
             latest_source_timestamp = frame_specs[-1].timestamp
             latest_moment = goes_timestamp_to_datetime(latest_source_timestamp)
             LOGGER.info(
@@ -649,7 +636,7 @@ class GoesTimelapseService:
 
             if not self.state_store.is_tracked(area_id):
                 self._cleanup_area_files(area_id)
-                return None
+                return
 
             self._set_area_status(
                 area_id,
@@ -657,19 +644,11 @@ class GoesTimelapseService:
                 last_error=None,
                 latest_source_timestamp=latest_source_timestamp,
                 media_path=str(media_path),
-                snippet_path=str(snippet_path),
-            )
-            return RenderedArea(
-                area=area,
-                png_paths=png_paths,
-                media_path=media_path,
-                snippet_path=snippet_path,
-                latest_source_timestamp=latest_source_timestamp,
             )
         except Exception as err:
             LOGGER.exception("Failed to process %s", area_id)
             self._set_area_status(area_id, "error", last_error=str(err))
-            return None
+            return
 
     def _cleanup_area_files(self, area_id: str) -> None:
         self.renderer.cleanup(area_id)
@@ -678,7 +657,6 @@ class GoesTimelapseService:
                 self.settings.raw_dir / source_key / area_id, ignore_errors=True
             )
         self.media_path(area_id).unlink(missing_ok=True)
-        (self.settings.snippets_dir / f"{area_id}.yaml").unlink(missing_ok=True)
 
     @staticmethod
     def _is_valid_raw(path: Path) -> bool:
