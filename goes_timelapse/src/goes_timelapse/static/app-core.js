@@ -296,8 +296,7 @@
     for (index = 0; index < app.state.downloads.length; index += 1) {
       if (
         app.state.downloads[index].phase === "downloading" ||
-        (Array.isArray(app.state.downloads[index].active_downloads) &&
-          app.state.downloads[index].active_downloads.length > 0)
+        app.state.downloads[index].active_count > 0
       ) {
         return true;
       }

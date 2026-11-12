@@ -23,7 +23,6 @@
 - `poll_minutes`: intervalo, em minutos, entre as verificações de novos quadros na NOAA.
 - `frame_count`: quantidade de quadros usados em cada animação WebP.
 - `gif_fps`: velocidade de reprodução da animação gerada.
-- `raw_history`: opção legada de compatibilidade. Download e retenção já seguem a timeline útil de cada município.
 - `solar_margin_hours`: margem, em horas, aplicada antes do nascer do sol e depois do pôr do sol para permitir leituras da Banda 2. O padrão é `0`, então essas leituras acontecem apenas entre o nascer e o pôr do sol.
 - `log_level`: nível de detalhamento dos logs do app.
 

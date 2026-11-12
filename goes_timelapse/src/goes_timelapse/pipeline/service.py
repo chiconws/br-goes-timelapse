@@ -81,9 +81,6 @@ class DownloadSourceSnapshot(TypedDict):
     completed_count: int
     failed_count: int
     active_count: int
-    current_file: str | None
-    last_downloaded: str | None
-    latest_available: str | None
     active_downloads: list[ActiveDownloadEntry]
     files_on_disk: list[RawFileEntry]
     file_count: int
@@ -122,7 +119,6 @@ class GoesTimelapseService:
             RAW_SOURCE_VISIBLE: GoesDownloader(
                 base_url=settings.goes_url,
                 raw_dir=settings.raw_dir / RAW_SOURCE_VISIBLE,
-                raw_history=settings.raw_history,
                 band="C02",
                 progress_callback=lambda payload: self._update_raw_download_status(
                     RAW_SOURCE_VISIBLE, payload
@@ -131,7 +127,6 @@ class GoesTimelapseService:
             RAW_SOURCE_INFRARED: GoesDownloader(
                 base_url=settings.goes_url,
                 raw_dir=settings.raw_dir / RAW_SOURCE_INFRARED,
-                raw_history=settings.raw_history,
                 band="C13",
                 progress_callback=lambda payload: self._update_raw_download_status(
                     RAW_SOURCE_INFRARED, payload
@@ -140,7 +135,6 @@ class GoesTimelapseService:
             RAW_SOURCE_LIGHTNING: GlmDownloader(
                 base_url=settings.goes_url,
                 raw_dir=settings.raw_dir / RAW_SOURCE_LIGHTNING,
-                raw_history=settings.raw_history,
                 progress_callback=lambda payload: self._update_raw_download_status(
                     RAW_SOURCE_LIGHTNING, payload
                 ),
@@ -337,7 +331,6 @@ class GoesTimelapseService:
             "queue_length": self._queue.qsize(),
             "raw_frame_count": len(files),
             "raw_timestamp_count": self._raw_timestamp_count(),
-            "raw_history_limit": self.settings.raw_history,
             "raw_frame_latest": files[0]["label"] if files else None,
             "raw_download_summary": " | ".join(summaries)
             if summaries
@@ -369,9 +362,6 @@ class GoesTimelapseService:
                     "completed_count": status["completed_count"],
                     "failed_count": status["failed_count"],
                     "active_count": status["active_count"],
-                    "current_file": status["current_file"],
-                    "last_downloaded": status["last_downloaded"],
-                    "latest_available": status["latest_available"],
                     "active_downloads": status["active_downloads"],
                     "files_on_disk": files,
                     "file_count": len(files),
@@ -452,14 +442,12 @@ class GoesTimelapseService:
 
                     self._finalize_download_status(plan.source_key, report)
                     LOGGER.info(
-                        "Download report for %s: downloaded=%s attempted=%s failed=%s kept=%s latest_available=%s last_downloaded=%s",
+                        "Download report for %s: downloaded=%s attempted=%s failed=%s kept=%s",
                         plan.source_key,
                         report.downloaded_count,
                         report.attempted_count,
                         report.failed_count,
-                        [path.name for path in report.kept_files],
-                        report.latest_available,
-                        report.last_downloaded,
+                        len(report.kept_files),
                     )
                     self._bytes_since_start[plan.source_key] += report.bytes_read
                     uptime_hours = max((perf_counter() - self._started_at) / 3600, 1e-9)
@@ -704,45 +692,7 @@ class GoesTimelapseService:
     def _update_raw_download_status(
         self, source_key: str, payload: dict[str, object]
     ) -> None:
-        status = self._download_status[source_key]
-        status["phase"] = str(payload.get("phase", "idle"))
-        status["attempted_count"] = _coerce_int(payload.get("attempted_count"))
-        status["completed_count"] = _coerce_int(payload.get("completed_count"))
-        status["failed_count"] = _coerce_int(payload.get("failed_count"))
-        status["active_count"] = _coerce_int(payload.get("active_count"))
-        current_file = payload.get("current_file")
-        latest_available = payload.get("latest_available")
-        status["current_file"] = str(current_file) if current_file is not None else None
-        status["latest_available"] = (
-            str(latest_available) if latest_available is not None else None
-        )
-        active_downloads = payload.get("active_downloads", [])
-        status["active_downloads"] = (
-            [
-                {
-                    "filename": str(item.get("filename", "")),
-                    "downloaded_bytes": int(item.get("downloaded_bytes", 0)),
-                    "total_bytes": (
-                        _coerce_int(item["total_bytes"])
-                        if item.get("total_bytes") is not None
-                        else None
-                    ),
-                    "percent": (
-                        float(item["percent"])
-                        if item.get("percent") is not None
-                        else None
-                    ),
-                    "stage": str(item.get("stage", "")),
-                }
-                for item in active_downloads
-                if isinstance(item, dict)
-            ]
-            if isinstance(active_downloads, list)
-            else []
-        )
-        last_downloaded = payload.get("last_downloaded")
-        if last_downloaded:
-            status["last_downloaded"] = str(last_downloaded)
+        self._download_status[source_key].update(payload)  # type: ignore[typeddict-item]
 
     def _finalize_download_status(
         self, source_key: str, report: DownloadReport
@@ -764,10 +714,6 @@ class GoesTimelapseService:
                 "completed_count": report.attempted_count,
                 "failed_count": report.failed_count,
                 "active_count": 0,
-                "current_file": None,
-                "last_downloaded": report.last_downloaded
-                or status.get("last_downloaded"),
-                "latest_available": report.latest_available,
                 "active_downloads": [],
             }
         )
@@ -777,7 +723,6 @@ class GoesTimelapseService:
         status.update(
             {
                 "phase": "error",
-                "current_file": None,
                 "active_count": 0,
                 "active_downloads": [],
                 "schedule_reason": message,
@@ -789,7 +734,6 @@ class GoesTimelapseService:
         status.update(
             {
                 "phase": "partial",
-                "current_file": None,
                 "active_count": 0,
                 "active_downloads": [],
                 "schedule_reason": "Usando o cache local; a última atualização da NOAA falhou",
@@ -813,7 +757,6 @@ class GoesTimelapseService:
                 status["phase"] = "idle"
             return
         status["phase"] = "paused" if plan.tracked_area_ids else "disabled"
-        status["current_file"] = None
         status["active_count"] = 0
         status["active_downloads"] = []
         status["attempted_count"] = 0
@@ -822,7 +765,6 @@ class GoesTimelapseService:
 
     def _apply_storage_pause(self, reason: str) -> None:
         for status in self._download_status.values():
-            status["current_file"] = None
             status["active_count"] = 0
             status["active_downloads"] = []
             status["attempted_count"] = 0
@@ -1028,7 +970,6 @@ class GoesTimelapseService:
     def _prune_raw_cache(self) -> str | None:
         return prune_raw_cache(
             settings=self.settings,
-            downloaders=self._downloaders,
             source_keys=tuple(self._downloaders.keys()),
             keep_timestamps_by_source=self._build_global_keep_timestamps(),
             logger=LOGGER,
@@ -1047,23 +988,6 @@ class GoesTimelapseService:
             if path.exists():
                 return path
         return None
-
-
-def _coerce_int(value: object | None) -> int:
-    if value is None:
-        return 0
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError:
-            return 0
-    return 0
 
 
 def _utc_now() -> str:

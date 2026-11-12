@@ -64,7 +64,6 @@ def build_settings(tmp_path: Path) -> Settings:
         poll_minutes=1,
         frame_count=3,
         gif_fps=2,
-        raw_history=4,
         solar_margin_hours=2,
         max_tracked=5,
         log_level=20,

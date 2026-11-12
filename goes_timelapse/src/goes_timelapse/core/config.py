@@ -36,7 +36,6 @@ class Settings:
     poll_minutes: int
     frame_count: int
     gif_fps: int
-    raw_history: int
     solar_margin_hours: int
     max_tracked: int
     log_level: int
@@ -92,7 +91,6 @@ class Settings:
             poll_minutes=_env_int("GOES_POLL_MINUTES", 2),
             frame_count=_env_int("GOES_FRAME_COUNT", 10),
             gif_fps=_env_int("GOES_GIF_FPS", 2),
-            raw_history=_env_int("GOES_RAW_HISTORY", 12),
             solar_margin_hours=_env_int("GOES_SOLAR_MARGIN_HOURS", 0),
             max_tracked=_env_int("GOES_MAX_TRACKED", 5),
             log_level=log_level,

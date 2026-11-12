@@ -13,7 +13,6 @@ def _build_downloader(tmp_path):
     return GoesDownloader(
         base_url="https://example.invalid/",
         raw_dir=tmp_path / "raw",
-        raw_history=4,
     )
 
 
@@ -21,7 +20,6 @@ def _build_glm_downloader(tmp_path):
     return GlmDownloader(
         base_url="https://example.invalid/",
         raw_dir=tmp_path / "raw",
-        raw_history=4,
     )
 
 
@@ -54,7 +52,6 @@ def test_parse_listing_filters_by_band_token(tmp_path):
     downloader = GoesDownloader(
         base_url="https://example.invalid/",
         raw_dir=tmp_path / "raw",
-        raw_history=4,
         band="C13",
     )
     xml_payload = """

@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
 
 from goes_timelapse.core.config import Settings
 from goes_timelapse.core.logging_utils import TraceLogger, get_logger
-from goes_timelapse.pipeline.downloader import GlmDownloader, GoesDownloader
 from goes_timelapse.pipeline.rendering import parse_goes_timestamp
 from goes_timelapse.pipeline.runtime_types import (
     RAW_SOURCE_INFRARED,
@@ -145,7 +144,6 @@ def available_lightning_points_by_timestamp(
 def prune_raw_cache(
     *,
     settings: Settings,
-    downloaders: Mapping[str, GoesDownloader | GlmDownloader],
     source_keys: tuple[str, ...],
     keep_timestamps_by_source: dict[str, tuple[str, ...]],
     logger: TraceLogger,
