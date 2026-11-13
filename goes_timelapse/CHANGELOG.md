@@ -1,7 +1,10 @@
 # Histórico de mudanças
 
-## 1.2.1
+## 1.3.0
 
+- Passa a rodar também em `aarch64`: Raspberry Pi 4 ou 5 com sistema de 64 bits, Home Assistant Green e Yellow.
+- Instala uma imagem pronta do GitHub Container Registry em vez de compilar no dispositivo, o que deixa instalação e atualização mais rápidas.
+- Atualiza a imagem base para Debian trixie, com Python `3.13` e `numpy` 2.
 - Remove as opções `scratch_dir` e `raw_history`, que a leitura parcial da 1.2.0 deixou sem efeito. O Supervisor ignora os valores antigos.
 - Deixa de gravar os snippets YAML de card em `/config/goes_timelapse/lovelace/`. Os arquivos que já existem podem ser apagados.
 - O aviso de espaço em disco passa a considerar só o `data_dir`, onde ficam as imagens.
