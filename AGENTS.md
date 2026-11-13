@@ -8,7 +8,7 @@ Home Assistant app (Supervisor add-on, `amd64` and `aarch64`) that builds WebP t
 
 ## Code structure
 
-Add-on folder: `goes_timelapse/` (`config.yaml`, `build.yaml`, `Dockerfile`, `rootfs/`, `DOCS.md`, `CHANGELOG.md`). Python package: `goes_timelapse/src/goes_timelapse/`.
+Add-on folder: `goes_timelapse/` (`config.yaml`, `Dockerfile`, `rootfs/`, `DOCS.md`, `CHANGELOG.md`). Python package: `goes_timelapse/src/goes_timelapse/`.
 
 - `app.py`: FastAPI app, HTTP API and static UI; `__main__.py` starts uvicorn.
 - `core/`: settings from add-on options (`config.py`), SQLite state store (`state.py`), models, logging.
@@ -22,7 +22,8 @@ Add-on folder: `goes_timelapse/` (`config.yaml`, `build.yaml`, `Dockerfile`, `ro
 ## Key concepts
 
 - Bump `version` in `goes_timelapse/config.yaml` and add a `CHANGELOG.md` entry for every release; Supervisor offers the update from that version.
-- Images are built on the device from `Dockerfile` (no prebuilt `image:`), so runtime deps live in `goes_timelapse/requirements.txt`.
+- Images are prebuilt: `.github/workflows/builder.yaml` builds every `arch` on each PR and, on push to `main`, publishes `ghcr.io/chiconws/br-goes-timelapse:<version>` (multi-arch, with `<arch>-br-goes-timelapse`). The Supervisor pulls the image named by `image:` in `config.yaml`, so the version must reach `main` together with the code. A published version is never overwritten. Runtime deps live in `goes_timelapse/requirements.txt`.
+- No `build.yaml`: the multi-arch base comes from `ARG BUILD_FROM` in the `Dockerfile`. The ha-test deploy script strips `image:` from its copy so the Supervisor builds the local code.
 - One cache folder per municipality; GLM flashes are shared.
 
 ## Local validation (before push)

@@ -1,4 +1,4 @@
-ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base-debian:trixie
+ARG BUILD_FROM=ghcr.io/home-assistant/base-debian:trixie
 FROM ${BUILD_FROM}
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -21,3 +21,9 @@ COPY rootfs /
 ENV PYTHONPATH=/opt/goes_timelapse/src
 
 RUN chmod +x /etc/services.d/goes-timelapse/run
+
+LABEL \
+    org.opencontainers.image.title="Home Assistant App: GOES Timelapse" \
+    org.opencontainers.image.description="Gera animações WebP do GOES-19 para municípios do Brasil." \
+    org.opencontainers.image.source="https://github.com/chiconws/br-goes-timelapse" \
+    org.opencontainers.image.licenses="MIT"
