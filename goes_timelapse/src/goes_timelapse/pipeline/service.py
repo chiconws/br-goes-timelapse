@@ -9,9 +9,7 @@ from pathlib import Path
 import shutil
 import sqlite3
 from time import perf_counter
-from typing import Any
-
-from typing_extensions import TypedDict
+from typing import Any, TypedDict
 
 from goes_timelapse.core.config import Settings
 from goes_timelapse.core.logging_utils import get_logger

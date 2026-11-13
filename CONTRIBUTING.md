@@ -1,11 +1,11 @@
 # Contributing to GOES Timelapse
 
-Thanks for helping. The tooling mirrors Home Assistant core, so if you have contributed there, this will feel familiar. Python is 3.11, the `python3` of the add-on image.
+Thanks for helping. The tooling mirrors Home Assistant core, so if you have contributed there, this will feel familiar. Python is 3.13, the `python3` of the add-on image.
 
 ## Setup
 
 ```bash
-uv venv --python 3.11 .venv
+uv venv --python 3.13 .venv
 uv pip install --python .venv -r requirements_test.txt
 .venv/bin/prek install
 ```
