@@ -70,7 +70,7 @@ O arquivo final de cada município fica disponível em `media-source://media_sou
 
 ## Compatibilidade de arquitetura
 
-Este add-on está publicado apenas para `amd64`.
+Este add-on está publicado para `amd64` (CPU `x86_64`) e `aarch64` (ARM de 64 bits).
 
 Exemplos que funcionam:
 
@@ -78,16 +78,14 @@ Exemplos que funcionam:
 - Intel NUC
 - desktop ou notebook x86_64
 - VM x86_64 em Proxmox
+- Raspberry Pi 4 ou 5 com sistema de 64 bits
+- Home Assistant Green ou Yellow
+- outras placas ARM de 64 bits (`aarch64`)
 
-Exemplos que não funcionam com o pacote atual:
+Exemplos que não funcionam:
 
-- Raspberry Pi 3
-- Raspberry Pi 4
-- Raspberry Pi 5
-- Home Assistant Yellow
-- placas ARM em geral
-
-Para suportar esses cenários, seria necessário publicar builds ARM adicionais.
+- sistemas ARM de 32 bits (`armv7`/`armhf`), como Home Assistant OS 32 bits em Raspberry Pi
+- `i386`
 
 ## Diretórios
 
