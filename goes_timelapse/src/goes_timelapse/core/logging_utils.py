@@ -5,9 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 import logging
 import sys
-from typing import Any, Final, cast
-
-from typing_extensions import override
+from typing import Any, Final, cast, override
 
 TRACE_LEVEL: Final[int] = 5
 TRACE_LEVEL_NAME: Final[str] = "TRACE"
