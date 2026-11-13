@@ -21,7 +21,7 @@ App do Home Assistant para acompanhar municípios brasileiros com imagens do sat
 ## Requisitos
 
 - Home Assistant com Supervisor.
-- Arquitetura `amd64`.
+- Arquitetura `amd64` ou `aarch64`.
 
 ## Compatibilidade de arquitetura
 
@@ -31,12 +31,14 @@ Exemplos que funcionam:
 - Intel NUC
 - notebook ou desktop x86_64
 - VM x86_64 em Proxmox
+- Raspberry Pi 4 ou 5 com sistema de 64 bits
+- Home Assistant Green ou Yellow
+- outras placas ARM de 64 bits (`aarch64`)
 
-Exemplos que não funcionam com o pacote atual:
+Exemplos que não funcionam:
 
-- Raspberry Pi 3, 4 ou 5
-- Home Assistant Yellow
-- placas ARM em geral
+- sistemas ARM de 32 bits (`armv7`/`armhf`), como Home Assistant OS 32 bits em Raspberry Pi
+- `i386`
 
 Para suportar esses dispositivos, seria preciso publicar builds ARM do add-on.
 

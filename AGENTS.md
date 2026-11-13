@@ -4,7 +4,7 @@ Language: README, DOCS, CHANGELOG and UI in **pt-BR**; code, comments and log me
 
 ## Overview
 
-Home Assistant app (Supervisor add-on, `amd64`) that builds WebP timelapses of GOES-19 imagery for Brazilian municipalities. It reads only the needed rows of NOAA's `ABI-L1b-RadF` C02/C13 and the `GLM-L2-LCFA` flashes over HTTP Range, renders frames locally and publishes them to `/media/goes_timelapse/`. The UI is served through ingress (FastAPI on port 8099).
+Home Assistant app (Supervisor add-on, `amd64` and `aarch64`) that builds WebP timelapses of GOES-19 imagery for Brazilian municipalities. It reads only the needed rows of NOAA's `ABI-L1b-RadF` C02/C13 and the `GLM-L2-LCFA` flashes over HTTP Range, renders frames locally and publishes them to `/media/goes_timelapse/`. The UI is served through ingress (FastAPI on port 8099).
 
 ## Code structure
 
