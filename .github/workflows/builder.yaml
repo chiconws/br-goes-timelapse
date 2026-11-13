@@ -1,0 +1,133 @@
+name: Builder
+
+# Builds the add-on image for every arch in config.yaml. Pull requests only
+# build; a push to main publishes ghcr.io/chiconws/<arch>-br-goes-timelapse and the
+# multi-arch br-goes-timelapse manifest, tagged with config.yaml's version. A version
+# that is already published is not overwritten.
+# yamllint disable-line rule:truthy
+on:
+  pull_request:
+    paths:
+      - goes_timelapse/**
+      - .github/workflows/builder.yaml
+  push:
+    branches:
+      - main
+    paths:
+      - goes_timelapse/**
+      - .github/workflows/builder.yaml
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read # checkout only
+    outputs:
+      architectures: ${{ steps.info.outputs.architectures }}
+      description: ${{ steps.info.outputs.description }}
+      image_name: ${{ steps.info.outputs.image_name }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      name: ${{ steps.info.outputs.name }}
+      publish: ${{ steps.info.outputs.publish }}
+      registry_prefix: ${{ steps.info.outputs.registry_prefix }}
+      url: ${{ steps.info.outputs.url }}
+      version: ${{ steps.info.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read config.yaml
+        id: info
+        env:
+          PUBLISH: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+        run: |
+          config=goes_timelapse/config.yaml
+          image=$(yq -r .image "$config")
+          {
+            echo "architectures=$(yq -o=json -I=0 .arch "$config")"
+            echo "description=$(yq -r .description "$config")"
+            echo "image_name=${image##*/}"
+            echo "name=$(yq -r .name "$config")"
+            echo "publish=$PUBLISH"
+            echo "registry_prefix=${image%/*}"
+            echo "url=$(yq -r .url "$config")"
+            echo "version=$(yq -r .version "$config")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Prepare build matrix
+        id: matrix
+        uses: home-assistant/builder/actions/prepare-multi-arch-matrix@7412f0023ea9b6e58e8bb5059f1660f51376f49a # 2026.09.0
+        with:
+          architectures: ${{ steps.info.outputs.architectures }}
+          image-name: ${{ steps.info.outputs.image_name }}
+          registry-prefix: ${{ steps.info.outputs.registry_prefix }}
+
+  build:
+    name: Build ${{ matrix.arch }} image
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read # checkout
+      id-token: write # Cosign signing (OIDC token)
+      packages: write # push to GHCR
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build image
+        uses: home-assistant/builder/actions/build-image@7412f0023ea9b6e58e8bb5059f1660f51376f49a # 2026.09.0
+        with:
+          arch: ${{ matrix.arch }}
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+          context: ./goes_timelapse
+          image: ${{ matrix.image }}
+          image-tags: |
+            ${{ needs.prepare.outputs.version }}
+            latest
+          labels: |
+            io.hass.type=app
+            io.hass.name=${{ needs.prepare.outputs.name }}
+            io.hass.description=${{ needs.prepare.outputs.description }}
+            io.hass.url=${{ needs.prepare.outputs.url }}
+          push: ${{ needs.prepare.outputs.publish }}
+          skip-existing: ${{ needs.prepare.outputs.publish == 'true' && needs.prepare.outputs.version || '' }}
+          version: ${{ needs.prepare.outputs.version }}
+
+  manifest:
+    name: Publish multi-arch manifest
+    needs: [prepare, build]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write # Cosign signing (OIDC token)
+      packages: write # push the manifest to GHCR
+    steps:
+      - name: Publish multi-arch manifest
+        uses: home-assistant/builder/actions/publish-multi-arch-manifest@7412f0023ea9b6e58e8bb5059f1660f51376f49a # 2026.09.0
+        with:
+          architectures: ${{ needs.prepare.outputs.architectures }}
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+          image-name: ${{ needs.prepare.outputs.image_name }}
+          image-tags: |
+            ${{ needs.prepare.outputs.version }}
+            latest
+          registry-prefix: ${{ needs.prepare.outputs.registry_prefix }}
+          skip-existing: ${{ needs.prepare.outputs.version }}
