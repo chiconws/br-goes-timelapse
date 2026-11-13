@@ -4,7 +4,7 @@ App do Home Assistant para acompanhar municípios brasileiros com imagens do sat
 
 > [!NOTE]
 > Este app foi construído com ajuda intensiva de IA generativa. O comportamento atual já foi exercitado em ambiente real, mas continua sendo importante validar logs, consumo de disco e resultados visuais antes de uso em produção.
-
+<!-- -->
 > [!WARNING]
 > Cada município consome cerca de `0.9 GB/dia` de internet. Veja [Uso de rede](#uso-de-rede).
 
@@ -21,7 +21,7 @@ App do Home Assistant para acompanhar municípios brasileiros com imagens do sat
 ## Requisitos
 
 - Home Assistant com Supervisor.
-- Arquitetura `amd64`.
+- Arquitetura `amd64` ou `aarch64`.
 
 ## Compatibilidade de arquitetura
 
@@ -31,12 +31,14 @@ Exemplos que funcionam:
 - Intel NUC
 - notebook ou desktop x86_64
 - VM x86_64 em Proxmox
+- Raspberry Pi 4 ou 5 com sistema de 64 bits
+- Home Assistant Green ou Yellow
+- outras placas ARM de 64 bits (`aarch64`)
 
-Exemplos que não funcionam com o pacote atual:
+Exemplos que não funcionam:
 
-- Raspberry Pi 3, 4 ou 5
-- Home Assistant Yellow
-- placas ARM em geral
+- sistemas ARM de 32 bits (`armv7`/`armhf`), como Home Assistant OS 32 bits em Raspberry Pi
+- `i386`
 
 Para suportar esses dispositivos, seria preciso publicar builds ARM do add-on.
 
@@ -52,7 +54,7 @@ O app não baixa os arquivos inteiros da NOAA. Ele lê por HTTP Range só o que 
 Medido em 24h reais para Vila Velha - ES, em `2026-10-30`:
 
 | Fonte | Por dia |
-|---|---:|
+| --- | ---: |
 | Imagens (`C02` e `C13`) | `0.89 GB` |
 | Raios (`GLM`) | `0.03 GB` |
 | **Total com 1 município** | **`0.92 GB`** |
@@ -81,21 +83,18 @@ data_dir/
 - Remover um município apaga as pastas dele e mantém as dos demais.
 - O app guarda apenas os quadros da timeline atual. Cada GeoTIFF ocupa cerca de `50 a 100 KB`.
 - `state_dir` guarda o `state.db`, que deve ficar em armazenamento confiável.
-- `scratch_dir` guarda temporários. Com a leitura parcial, ele é pouco usado.
 
 Padrão atual:
 
 ```yaml
 data_dir: /data/goes_timelapse
 state_dir: /config/goes_timelapse/state
-scratch_dir: /data/goes_timelapse/tmp
 ```
 
 Para guardar o cache em outro disco:
 
 ```yaml
 data_dir: /media/SEU_DISCO/goes_timelapse
-scratch_dir: /media/SEU_DISCO/goes_timelapse/tmp
 state_dir: /config/goes_timelapse/state
 ```
 

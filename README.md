@@ -1,10 +1,15 @@
 # GOES Timelapse para Home Assistant
 
+[![Release][badge-release]][link-release]
+[![Atividade][badge-commit-activity]][link-commits]
+[![Testes][badge-tests]][link-tests]
+[![Licença][badge-license]][link-license]
+
 Este repositório contém um app do Home Assistant para acompanhar municípios brasileiros com imagens do satélite GOES-19. O app monta uma timeline útil de frames por município, lê dos produtos oficiais da NOAA apenas as partes necessárias, gera animações WebP dentro do Home Assistant e sobrepõe marcador opcional e descargas elétricas GLM.
 
 > [!NOTE]
 > Este projeto foi construído com ajuda intensiva de IA generativa. O código está em uso real e foi revisado ao longo do desenvolvimento, mas a expectativa correta continua sendo validação humana contínua antes de uso em produção.
-
+<!-- -->
 > [!WARNING]
 > Cada município consome cerca de `0.9 GB/dia` de internet. Veja [Uso de rede](#uso-de-rede).
 
@@ -21,11 +26,11 @@ Este repositório contém um app do Home Assistant para acompanhar municípios b
 ## Requisitos
 
 - Home Assistant com Supervisor.
-- Arquitetura `amd64`.
+- Arquitetura `amd64` ou `aarch64`.
 
 ## Compatibilidade de arquitetura
 
-Hoje este add-on está publicado apenas para `amd64`, ou seja, ele funciona em instalações Home Assistant rodando em CPU `x86_64`.
+Este add-on está publicado para `amd64` (CPU `x86_64`) e `aarch64` (ARM de 64 bits).
 
 Exemplos que funcionam:
 
@@ -33,16 +38,14 @@ Exemplos que funcionam:
 - NUC Intel
 - desktop ou notebook x86_64 reaproveitado
 - VM x86_64 em Proxmox, VMware ou VirtualBox
+- Raspberry Pi 4 ou 5 com sistema de 64 bits
+- Home Assistant Green ou Yellow
+- outras placas ARM de 64 bits (`aarch64`)
 
-Exemplos que não funcionam com o pacote atual:
+Exemplos que não funcionam:
 
-- Raspberry Pi 3
-- Raspberry Pi 4
-- Raspberry Pi 5
-- Home Assistant Yellow
-- Orange Pi e outras placas ARM
-
-Para esses dispositivos ARM, seria necessário publicar builds específicas para `aarch64`/`armv7`.
+- sistemas ARM de 32 bits (`armv7`/`armhf`), como Home Assistant OS 32 bits em Raspberry Pi
+- `i386`
 
 ## Uso de rede
 
@@ -56,7 +59,7 @@ O app não baixa os arquivos inteiros da NOAA. Ele lê por HTTP Range só o que 
 Medido em 24h reais para Vila Velha - ES, em `2026-10-30`:
 
 | Fonte | Por dia |
-|---|---:|
+| --- | ---: |
 | Imagens (`C02` e `C13`) | `0.89 GB` |
 | Raios (`GLM`) | `0.03 GB` |
 | **Total com 1 município** | **`0.92 GB`** |
@@ -70,6 +73,10 @@ Medido em 24h reais para Vila Velha - ES, em `2026-10-30`:
 - Depois de uma parada, o app recompõe os quadros que faltam, o que gera um pico temporário.
 
 ## Como adicionar ao Home Assistant
+
+[![Adicionar o repositório ao Home Assistant][badge-my-addon-repo]][link-my-addon-repo]
+
+Ou manualmente:
 
 1. No Home Assistant, abra `Configurações` > `Apps`.
 2. Abra a loja de apps.
@@ -101,7 +108,6 @@ Por padrão, o app usa estes caminhos:
 
 - `data_dir: /data/goes_timelapse`
 - `state_dir: /config/goes_timelapse/state`
-- `scratch_dir: /data/goes_timelapse/tmp`
 
 ```text
 data_dir/
@@ -117,21 +123,19 @@ data_dir/
 - Remover um município apaga as pastas dele e mantém as dos demais.
 - O app guarda apenas os quadros da timeline atual. Cada GeoTIFF ocupa cerca de `50 a 100 KB`.
 - `state_dir` guarda o `state.db`, que deve ficar em armazenamento confiável.
-- `scratch_dir` guarda temporários. Com a leitura parcial, ele é pouco usado.
 
 Para guardar o cache em outro disco:
 
 ```yaml
 data_dir: /media/SEU_DISCO/goes_timelapse
-scratch_dir: /media/SEU_DISCO/goes_timelapse/tmp
 state_dir: /config/goes_timelapse/state
 ```
 
 ## Capturas de tela
 
-Busca de municípios:
+Interface com o município selecionado no visor e os demais em miniaturas:
 
-![Busca de município](docs/images/ui-busca-municipio.png)
+![Interface do app com São Paulo - SP no visor](docs/images/ui-visor.png)
 
 Prévia de animação gerada:
 
@@ -143,3 +147,29 @@ Prévia de animação gerada:
 
 - `repository.yaml`: metadados do repositório para o Home Assistant.
 - `goes_timelapse/`: pasta do app do Home Assistant.
+
+## Remoção
+
+1. Em `Configurações` > `Apps` > `GOES Timelapse`, pare e desinstale o app. Isso apaga o `data_dir` padrão (`/data/goes_timelapse`).
+2. Apague `/media/goes_timelapse/` (animações) e `/config/goes_timelapse/` (`state_dir`), e o `data_dir` se você o moveu para outro disco.
+3. Se quiser, remova o repositório na loja de apps.
+
+## Desenvolvimento
+
+Veja o [CONTRIBUTING.md](CONTRIBUTING.md) para configurar o ambiente, rodar as verificações e os testes, e o [AGENTS.md](AGENTS.md) para a estrutura do código.
+
+## Licença
+
+MIT, veja [LICENSE](LICENSE).
+
+[badge-release]: https://img.shields.io/github/v/release/chiconws/br-goes-timelapse
+[badge-commit-activity]: https://img.shields.io/github/commit-activity/m/chiconws/br-goes-timelapse
+[badge-tests]: https://github.com/chiconws/br-goes-timelapse/actions/workflows/tests.yaml/badge.svg
+[badge-license]: https://img.shields.io/github/license/chiconws/br-goes-timelapse
+[badge-my-addon-repo]: https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg
+
+[link-release]: https://github.com/chiconws/br-goes-timelapse/releases/latest
+[link-commits]: https://github.com/chiconws/br-goes-timelapse/commits/main
+[link-tests]: https://github.com/chiconws/br-goes-timelapse/actions/workflows/tests.yaml
+[link-license]: LICENSE
+[link-my-addon-repo]: https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fchiconws%2Fbr-goes-timelapse

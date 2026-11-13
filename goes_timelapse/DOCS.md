@@ -2,7 +2,7 @@
 
 > [!NOTE]
 > Este app foi construído com ajuda intensiva de IA generativa. A base está funcional e em uso real, mas a expectativa correta é continuar validando comportamento, custos de rede e consumo de disco a cada mudança.
-
+<!-- -->
 > [!WARNING]
 > Cada município consome cerca de `0.9 GB/dia` de internet. Veja [Uso de rede](#uso-de-rede).
 
@@ -20,11 +20,9 @@
 
 - `data_dir`: diretório persistente para `raw/`, `processed/` e `geometry/`.
 - `state_dir`: diretório do banco `state.db`.
-- `scratch_dir`: diretório de temporários, pouco usado com a leitura parcial.
 - `poll_minutes`: intervalo, em minutos, entre as verificações de novos quadros na NOAA.
 - `frame_count`: quantidade de quadros usados em cada animação WebP.
 - `gif_fps`: velocidade de reprodução da animação gerada.
-- `raw_history`: opção legada de compatibilidade. Download e retenção já seguem a timeline útil de cada município.
 - `solar_margin_hours`: margem, em horas, aplicada antes do nascer do sol e depois do pôr do sol para permitir leituras da Banda 2. O padrão é `0`, então essas leituras acontecem apenas entre o nascer e o pôr do sol.
 - `log_level`: nível de detalhamento dos logs do app.
 
@@ -38,7 +36,7 @@ O app não baixa os arquivos inteiros da NOAA. Ele lê por HTTP Range só o que 
 Medido em 24h reais para Vila Velha - ES, em `2026-10-30`:
 
 | Fonte | Por dia |
-|---|---:|
+| --- | ---: |
 | Imagens (`C02` e `C13`) | `0.89 GB` |
 | Raios (`GLM`) | `0.03 GB` |
 | **Total com 1 município** | **`0.92 GB`** |
@@ -67,13 +65,12 @@ data_dir/
 - Remover um município apaga as pastas dele e mantém as dos demais.
 - O app guarda apenas os quadros da timeline atual. Cada GeoTIFF ocupa cerca de `50 a 100 KB`.
 - `state_dir` guarda o `state.db`, que deve ficar em armazenamento confiável.
-- `scratch_dir` guarda temporários. Com a leitura parcial, ele é pouco usado.
 
 O arquivo final de cada município fica disponível em `media-source://media_source/local/goes_timelapse/<area_id>.webp`.
 
 ## Compatibilidade de arquitetura
 
-Este add-on está publicado apenas para `amd64`.
+Este add-on está publicado para `amd64` (CPU `x86_64`) e `aarch64` (ARM de 64 bits).
 
 Exemplos que funcionam:
 
@@ -81,16 +78,14 @@ Exemplos que funcionam:
 - Intel NUC
 - desktop ou notebook x86_64
 - VM x86_64 em Proxmox
+- Raspberry Pi 4 ou 5 com sistema de 64 bits
+- Home Assistant Green ou Yellow
+- outras placas ARM de 64 bits (`aarch64`)
 
-Exemplos que não funcionam com o pacote atual:
+Exemplos que não funcionam:
 
-- Raspberry Pi 3
-- Raspberry Pi 4
-- Raspberry Pi 5
-- Home Assistant Yellow
-- placas ARM em geral
-
-Para suportar esses cenários, seria necessário publicar builds ARM adicionais.
+- sistemas ARM de 32 bits (`armv7`/`armhf`), como Home Assistant OS 32 bits em Raspberry Pi
+- `i386`
 
 ## Diretórios
 
@@ -99,13 +94,11 @@ Padrão do add-on:
 ```yaml
 data_dir: /data/goes_timelapse
 state_dir: /config/goes_timelapse/state
-scratch_dir: /data/goes_timelapse/tmp
 ```
 
 Para guardar o cache em outro disco:
 
 ```yaml
 data_dir: /media/SEU_DISCO/goes_timelapse
-scratch_dir: /media/SEU_DISCO/goes_timelapse/tmp
 state_dir: /config/goes_timelapse/state
 ```

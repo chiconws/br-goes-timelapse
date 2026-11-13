@@ -1,5 +1,6 @@
-from goes_timelapse.app import main
+"""Run the GOES Timelapse server."""
 
+from goes_timelapse.app import main
 
 if __name__ == "__main__":
     main()

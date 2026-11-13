@@ -1,18 +1,22 @@
+"""HTTP Range reads of the parts of NOAA netCDF files that are needed."""
+
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 import http.client
 import io
 import logging
 import math
 import os
+from pathlib import Path
 import struct
 import threading
 import time
-import zlib
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
-from pathlib import Path
+from typing import Any, cast, override
 from urllib.parse import urlsplit
+import zlib
 
 import h5py
 import numpy as np
@@ -21,7 +25,6 @@ from rasterio import Affine
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
 from rasterio.warp import reproject, transform_bounds
-
 
 LOGGER = logging.getLogger(__name__)
 WGS84_CRS = CRS.from_epsg(4326)
@@ -58,6 +61,8 @@ BBox = tuple[float, float, float, float]
 
 @dataclass(slots=True)
 class CropStats:
+    """Bytes, requests and timings of one partial read."""
+
     bytes_read: int = 0
     requests: int = 0
     retries: int = 0
@@ -74,6 +79,7 @@ class RangeFile(io.RawIOBase):
     """Read-only file over HTTP Range for h5py, counting what crosses the wire."""
 
     def __init__(self, url: str, *, block_size: int, user_agent: str):
+        """Prepare connections for url, reading block_size bytes at a time."""
         self._parts = urlsplit(url)
         self._block_size = block_size
         self._headers = {"User-Agent": user_agent, "Accept-Encoding": "identity"}
@@ -99,17 +105,23 @@ class RangeFile(io.RawIOBase):
                 if self._parts.scheme == "https"
                 else http.client.HTTPConnection
             )
-            connection = connection_type(self._parts.netloc, timeout=RANGE_TIMEOUT_SECONDS)
+            connection = connection_type(
+                self._parts.netloc, timeout=RANGE_TIMEOUT_SECONDS
+            )
             self._local.connection = connection
             with self._lock:
                 self._connections.add(connection)
         return connection
 
-    def _request(self, method: str, headers: dict[str, str], expected: int) -> tuple[bytes, str]:
+    def _request(
+        self, method: str, headers: dict[str, str], expected: int
+    ) -> tuple[bytes, str]:
         for attempt in range(1, RANGE_RETRY_ATTEMPTS + 1):
             try:
                 connection = self._connect()
-                connection.request(method, self._parts.path, headers={**self._headers, **headers})
+                connection.request(
+                    method, self._parts.path, headers={**self._headers, **headers}
+                )
                 response = connection.getresponse()
                 body = response.read()
                 with self._lock:
@@ -117,7 +129,7 @@ class RangeFile(io.RawIOBase):
                 if response.status == expected:
                     return body, response.headers.get("Content-Length", "0")
                 if response.status not in RETRYABLE_STATUS:
-                    raise OSError(f"HTTP {response.status} em {self._parts.path}")
+                    raise OSError(f"HTTP {response.status} on {self._parts.path}")
                 failure: Exception = OSError(f"HTTP {response.status}")
             except (ConnectionError, TimeoutError, http.client.HTTPException) as err:
                 failure = err
@@ -126,7 +138,9 @@ class RangeFile(io.RawIOBase):
                 raise failure
             with self._lock:
                 self.retries += 1
-            LOGGER.warning("Retrying %s %s: %r", method, headers.get("Range", ""), failure)
+            LOGGER.warning(
+                "Retrying %s %s: %r", method, headers.get("Range", ""), failure
+            )
             time.sleep(attempt)
         raise AssertionError("unreachable")
 
@@ -138,24 +152,36 @@ class RangeFile(io.RawIOBase):
             with self._lock:
                 self._connections.discard(connection)
 
+    @override
     def close(self) -> None:
+        """Close every pooled connection."""
         self._pool.shutdown()
         for connection in self._connections:
             connection.close()
         self._connections.clear()
         super().close()
 
+    @override
     def readable(self) -> bool:
+        """Return True: the file can be read."""
         return True
 
+    @override
     def seekable(self) -> bool:
+        """Return True: the file can seek."""
         return True
 
+    @override
     def tell(self) -> int:
+        """Return the current position."""
         return self._position
 
+    @override
     def seek(self, offset: int, whence: int = 0) -> int:
-        self._position = {0: offset, 1: self._position + offset, 2: self.size + offset}[whence]
+        """Move the position like io.RawIOBase.seek."""
+        self._position = {0: offset, 1: self._position + offset, 2: self.size + offset}[
+            whence
+        ]
         return self._position
 
     def _fetch_block(self, index: int) -> None:
@@ -163,7 +189,7 @@ class RangeFile(io.RawIOBase):
         end = min(start + self._block_size, self.size) - 1
         data, _ = self._request("GET", {"Range": f"bytes={start}-{end}"}, 206)
         if len(data) != end - start + 1:
-            raise OSError(f"Leitura parcial curta em {self._parts.path}")
+            raise OSError(f"Short range read on {self._parts.path}")
         with self._lock:
             self.bytes_read += len(data)
         self._blocks[index] = data
@@ -173,7 +199,9 @@ class RangeFile(io.RawIOBase):
             # Like an OS read-ahead: index lookups jump around and stay single, chunk data runs
             # in file order and ramps up, so only sequential reads pay for the blocks they overrun.
             sequential = index == self._last_read_block + 1
-            self._read_ahead = min(self._read_ahead * 2, READ_AHEAD_BLOCKS) if sequential else 1
+            self._read_ahead = (
+                min(self._read_ahead * 2, READ_AHEAD_BLOCKS) if sequential else 1
+            )
             last_block = (self.size - 1) // self._block_size
             stop = min(index + self._read_ahead, last_block + 1)
             self._last_read_block = stop - 1
@@ -182,7 +210,9 @@ class RangeFile(io.RawIOBase):
             self.network_seconds += time.perf_counter() - started_at
         return self._blocks[index]
 
-    def readinto(self, buffer) -> int:
+    @override
+    def readinto(self, buffer: Any) -> int:  # writable buffer from h5py
+        """Fill buffer from the current position."""
         count = min(len(buffer), max(self.size - self._position, 0))
         done = 0
         while done < count:
@@ -213,17 +243,25 @@ def write_abi_crop(
     gray = np.zeros((row_max - row_min, col_max - col_min), dtype=np.uint8)
     alpha = np.zeros_like(gray)
     transform = Affine(
-        GRID_RESOLUTION, 0, col_min * GRID_RESOLUTION,
-        0, -GRID_RESOLUTION, -row_min * GRID_RESOLUTION,
+        GRID_RESOLUTION,
+        0,
+        col_min * GRID_RESOLUTION,
+        0,
+        -GRID_RESOLUTION,
+        -row_min * GRID_RESOLUTION,
     )
 
     remote = RangeFile(url, block_size=BLOCK_SIZE_BY_BAND[band], user_agent=user_agent)
     try:
         with h5py.File(remote, "r") as dataset:
             source_crs = _geostationary_crs(dataset)
-            height = float(dataset["goes_imager_projection"].attrs["perspective_point_height"][0])
+            height = float(
+                _attrs(dataset, "goes_imager_projection")["perspective_point_height"][0]
+            )
             axes = _axis_scales(dataset, height)
-            _paint_bbox(dataset, band, bbox, source_crs, axes, gray, alpha, transform, stats)
+            _paint_bbox(
+                dataset, band, bbox, source_crs, axes, gray, alpha, transform, stats
+            )
     finally:
         remote.close()
     stats.bytes_read = remote.bytes_read
@@ -242,7 +280,7 @@ def write_abi_crop(
 
 
 def _geostationary_crs(dataset: h5py.File) -> CRS:
-    projection = dataset["goes_imager_projection"].attrs
+    projection = _attrs(dataset, "goes_imager_projection")
     sweep = projection["sweep_angle_axis"]
     sweep = sweep.decode() if isinstance(sweep, bytes) else str(sweep)
     return CRS.from_proj4(
@@ -253,8 +291,10 @@ def _geostationary_crs(dataset: h5py.File) -> CRS:
     )
 
 
-def _axis_scales(dataset: h5py.File, height: float) -> tuple[float, float, float, float]:
-    x_attrs, y_attrs = dataset["x"].attrs, dataset["y"].attrs
+def _axis_scales(
+    dataset: h5py.File, height: float
+) -> tuple[float, float, float, float]:
+    x_attrs, y_attrs = _attrs(dataset, "x"), _attrs(dataset, "y")
     return (
         float(x_attrs["scale_factor"][0]) * height,
         float(x_attrs["add_offset"][0]) * height,
@@ -277,36 +317,52 @@ def _paint_bbox(
     x_scale, x_offset, y_scale, y_offset = axes
     pad = READ_MARGIN_PIXELS * GRID_RESOLUTION
     padded = (bbox[0] - pad, bbox[1] - pad, bbox[2] + pad, bbox[3] + pad)
-    x_min, y_min, x_max, y_max = transform_bounds(WGS84_CRS, source_crs, *padded, densify_pts=21)
-    radiance = dataset["Rad"]
+    x_min, y_min, x_max, y_max = transform_bounds(
+        WGS84_CRS, source_crs, *padded, densify_pts=21
+    )
+    radiance = _node(dataset, "Rad")
     rows, columns = radiance.shape
     # Index math stays in float until floor/ceil; the y axis runs downward.
     row_start = max(math.floor((y_max - y_offset) / y_scale) - READ_MARGIN_PIXELS, 0)
-    row_stop = min(math.ceil((y_min - y_offset) / y_scale) + 1 + READ_MARGIN_PIXELS, rows)
+    row_stop = min(
+        math.ceil((y_min - y_offset) / y_scale) + 1 + READ_MARGIN_PIXELS, rows
+    )
     col_start = max(math.floor((x_min - x_offset) / x_scale) - READ_MARGIN_PIXELS, 0)
-    col_stop = min(math.ceil((x_max - x_offset) / x_scale) + 1 + READ_MARGIN_PIXELS, columns)
+    col_stop = min(
+        math.ceil((x_max - x_offset) / x_scale) + 1 + READ_MARGIN_PIXELS, columns
+    )
     if row_start >= row_stop or col_start >= col_stop:
-        raise ValueError(f"Área fora do disco do satélite: {bbox}")
+        raise ValueError(f"Area outside the satellite disk: {bbox}")
 
     stats.rows = row_stop - row_start
     counts = radiance[row_start:row_stop, col_start:col_stop]
     source_gray, source_alpha = _counts_to_gray_alpha(dataset, band, counts)
     reproject_started_at = time.perf_counter()
     source_transform = Affine(
-        x_scale, 0, x_offset + (col_start - 0.5) * x_scale,
-        0, y_scale, y_offset + (row_start - 0.5) * y_scale,
+        x_scale,
+        0,
+        x_offset + (col_start - 0.5) * x_scale,
+        0,
+        y_scale,
+        y_offset + (row_start - 0.5) * y_scale,
     )
 
     inverse = ~transform
-    col_left, row_top = inverse * (bbox[0], bbox[3])
-    col_right, row_bottom = inverse * (bbox[2], bbox[1])
+    col_left, row_top = inverse @ (bbox[0], bbox[3])
+    col_right, row_bottom = inverse @ (bbox[2], bbox[1])
     window = (
-        slice(max(math.floor(row_top) - READ_MARGIN_PIXELS, 0), math.ceil(row_bottom) + READ_MARGIN_PIXELS),
-        slice(max(math.floor(col_left) - READ_MARGIN_PIXELS, 0), math.ceil(col_right) + READ_MARGIN_PIXELS),
+        slice(
+            max(math.floor(row_top) - READ_MARGIN_PIXELS, 0),
+            math.ceil(row_bottom) + READ_MARGIN_PIXELS,
+        ),
+        slice(
+            max(math.floor(col_left) - READ_MARGIN_PIXELS, 0),
+            math.ceil(col_right) + READ_MARGIN_PIXELS,
+        ),
     )
     target_gray = np.zeros_like(gray[window])
     target_alpha = np.zeros_like(alpha[window])
-    target_transform = transform * Affine.translation(window[1].start, window[0].start)
+    target_transform = transform @ Affine.translation(window[1].start, window[0].start)
     for source, target in ((source_gray, target_gray), (source_alpha, target_alpha)):
         reproject(
             source=source,
@@ -328,7 +384,7 @@ def _counts_to_gray_alpha(
     band: str,
     counts: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    attrs = dataset["Rad"].attrs
+    attrs = _attrs(dataset, "Rad")
     fill_value = attrs["_FillValue"][0]
     scale = float(attrs["scale_factor"][0])
     offset = float(attrs["add_offset"][0])
@@ -340,13 +396,21 @@ def _counts_to_gray_alpha(
         normalized = _enhance_brightness_temperature(
             _brightness_temperature(
                 radiance,
-                *(float(dataset[name][()]) for name in (
-                    "planck_fk1", "planck_fk2", "planck_bc1", "planck_bc2",
-                )),
+                *(
+                    float(_node(dataset, name)[()])
+                    for name in (
+                        "planck_fk1",
+                        "planck_fk2",
+                        "planck_bc1",
+                        "planck_bc2",
+                    )
+                ),
             )
         )
     else:
-        normalized = np.sqrt(np.clip(radiance * float(dataset["kappa0"][()]), 0.0, 1.0))
+        normalized = np.sqrt(
+            np.clip(radiance * float(_node(dataset, "kappa0")[()]), 0.0, 1.0)
+        )
     gray = np.rint(np.clip(normalized, 0.0, 1.0) * 255).astype(np.uint8)
     gray[~valid] = 0
     return gray, valid.astype(np.uint8) * 255
@@ -359,7 +423,7 @@ def _brightness_temperature(
     bc1: float,
     bc2: float,
 ) -> np.ndarray:
-    return (fk2 / np.log(fk1 / radiance + 1.0) - bc1) / bc2
+    return cast(np.ndarray, (fk2 / np.log(fk1 / radiance + 1.0) - bc1) / bc2)
 
 
 def _enhance_brightness_temperature(temperature: np.ndarray) -> np.ndarray:
@@ -424,16 +488,16 @@ def _fsync_directory(path: Path) -> None:
 def parse_glm_node(node: bytes) -> list[tuple[int, int]]:
     """HDF5 B-tree v1 leaf of a 1-D chunked dataset: (address, stored size) per chunk."""
     if len(node) < GLM_NODE_SIZE or node[:4] != b"TREE" or node[4] != 1 or node[5] != 0:
-        raise ValueError("Nó GLM fora do layout esperado")
+        raise ValueError("GLM node outside the expected layout")
     used = struct.unpack_from("<H", node, 6)[0]
     if not 1 <= used <= GLM_NODE_MAX_ENTRIES:
-        raise ValueError(f"Nó GLM com {used} entradas")
+        raise ValueError(f"GLM node with {used} entries")
     entries: list[tuple[int, int]] = []
     for index in range(used):
         position = 24 + index * 32
         size, filter_mask = struct.unpack_from("<II", node, position)
         if filter_mask != 0:
-            raise ValueError("Chunk GLM com filtro desativado")
+            raise ValueError("GLM chunk with a disabled filter")
         entries.append((struct.unpack_from("<Q", node, position + 24)[0], size))
     return entries
 
@@ -453,17 +517,24 @@ def decode_glm_chunks(
     chunks: list[tuple[int, int]],
     ranges: dict[tuple[int, int], bytes],
 ) -> np.ndarray:
+    """Decompress and join the HDF5 chunks of a GLM variable."""
     values: list[np.ndarray] = []
     for address, size in chunks:
-        start, end = next(item for item in ranges if item[0] <= address and address + size <= item[1])
-        values.append(_decode_glm_chunk(ranges[(start, end)][address - start : address - start + size]))
+        start, end = next(
+            item for item in ranges if item[0] <= address and address + size <= item[1]
+        )
+        values.append(
+            _decode_glm_chunk(
+                ranges[(start, end)][address - start : address - start + size]
+            )
+        )
     return np.concatenate(values)
 
 
 def _decode_glm_chunk(blob: bytes) -> np.ndarray:
     raw = np.frombuffer(zlib.decompress(blob), dtype=np.uint8)
     if raw.size % 4:
-        raise ValueError("Chunk GLM com tamanho inválido")
+        raise ValueError("GLM chunk with an invalid size")
     # HDF5 shuffle stores byte 0 of every value first, then byte 1, and so on.
     return np.frombuffer(raw.reshape(4, -1).T.tobytes(), dtype="<f4")
 
@@ -473,14 +544,31 @@ def read_glm_flashes_with_hdf5(url: str, *, user_agent: str) -> list[dict[str, f
     remote = RangeFile(url, block_size=GLM_CHECK_BLOCK_SIZE, user_agent=user_agent)
     try:
         with h5py.File(remote, "r") as dataset:
-            return valid_flash_points(dataset["flash_lat"][:], dataset["flash_lon"][:])
+            return valid_flash_points(
+                _node(dataset, "flash_lat")[:], _node(dataset, "flash_lon")[:]
+            )
     finally:
         remote.close()
 
 
-def valid_flash_points(latitudes, longitudes) -> list[dict[str, float]]:
+def valid_flash_points(
+    latitudes: Iterable[float], longitudes: Iterable[float]
+) -> list[dict[str, float]]:
+    """Return the finite flash coordinates as points."""
     return [
         {"lat": latitude, "lon": longitude}
-        for latitude, longitude in zip(map(float, latitudes), map(float, longitudes), strict=False)
+        for latitude, longitude in zip(
+            map(float, latitudes), map(float, longitudes), strict=False
+        )
         if -90.0 <= latitude <= 90.0 and -180.0 <= longitude <= 180.0
     ]
+
+
+def _node(dataset: h5py.File, name: str) -> h5py.Dataset:
+    """Return a variable of the file; GOES files keep them at the root."""
+    return cast(h5py.Dataset, dataset[name])
+
+
+def _attrs(dataset: h5py.File, name: str) -> Mapping[str, Any]:
+    """Return the attributes of a variable of the file."""
+    return cast(Mapping[str, Any], dataset[name].attrs)

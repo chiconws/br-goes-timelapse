@@ -1,76 +1,55 @@
+"""Municipality catalog and search."""
+
 from __future__ import annotations
 
 import gzip
 import json
+from pathlib import Path
 import re
 import unicodedata
-from pathlib import Path
 
 from goes_timelapse.core.models import AreaCatalogEntry, BoundaryLine
 
 
-SUPPORTED_AREA_TYPES = frozenset({"municipio"})
-
-
-AREA_TYPE_PRIORITY = {
-    "municipio": 0,
-}
-
-
 def normalize_text(value: str) -> str:
+    """Lowercase and strip accents for search."""
     normalized = unicodedata.normalize("NFKD", value)
     normalized = normalized.encode("ascii", "ignore").decode("ascii")
     normalized = re.sub(r"[^0-9a-z]+", " ", normalized.lower())
-    normalized = " ".join(normalized.split())
-    return normalized
+    return " ".join(normalized.split())
 
 
 def load_boundary_lines(path: Path) -> tuple[BoundaryLine, ...]:
+    """Load state boundary polylines from a gzipped GeoJSON."""
     with gzip.open(path, "rt", encoding="utf-8") as handle:
         raw_data = json.load(handle)
     return tuple(
         BoundaryLine(
-            bounds=_coerce_bounds(item["bounds"]),
+            bounds=parse_bounds(item["bounds"]),
             line=tuple((float(lon), float(lat)) for lon, lat in item["line"]),
         )
         for item in raw_data
     )
 
 
-def _coerce_bounds(raw_bounds: object) -> tuple[float, float, float, float]:
-    if not isinstance(raw_bounds, list | tuple) or len(raw_bounds) != 4:
-        raise ValueError("Invalid boundary bounds payload")
-    left, bottom, right, top = raw_bounds
-    return (
-        _coerce_float(left),
-        _coerce_float(bottom),
-        _coerce_float(right),
-        _coerce_float(top),
-    )
-
-
-def _coerce_float(value: object) -> float:
-    if not isinstance(value, int | float | str):
-        raise ValueError("Invalid boundary coordinate")
-    return float(value)
-
-
 class AreaCatalog:
+    """In-memory municipality catalog."""
+
     def __init__(self, areas: list[AreaCatalogEntry]):
-        filtered_areas = [area for area in areas if area.area_type in SUPPORTED_AREA_TYPES]
+        """Index the given areas by id and search key."""
         self._areas = sorted(
-            filtered_areas,
+            areas,
             key=lambda area: (
-                AREA_TYPE_PRIORITY.get(area.area_type, 99),
                 -(area.population or -1),
                 area.name,
                 area.state_code or "",
             ),
         )
-        self._by_id = {area.area_id: area for area in filtered_areas}
+        self._by_id = {area.area_id: area for area in areas}
 
     @classmethod
-    def from_path(cls, path: Path) -> "AreaCatalog":
+    def from_path(cls, path: Path) -> AreaCatalog:
+        """Load the catalog from a gzipped JSON file."""
         with gzip.open(path, "rt", encoding="utf-8") as handle:
             raw_data = json.load(handle)
         areas = [
@@ -80,20 +59,28 @@ class AreaCatalog:
                 area_code=str(item["area_code"]),
                 name=str(item["name"]),
                 search_text=str(item["search_text"]),
-                population=int(item["population"]) if item.get("population") is not None else None,
+                population=int(item["population"])
+                if item.get("population") is not None
+                else None,
                 state_code=str(item["state_code"]) if item.get("state_code") else None,
                 state_name=str(item["state_name"]) if item.get("state_name") else None,
-                parent_code=str(item["parent_code"]) if item.get("parent_code") else None,
-                parent_name=str(item["parent_name"]) if item.get("parent_name") else None,
+                parent_code=str(item["parent_code"])
+                if item.get("parent_code")
+                else None,
+                parent_name=str(item["parent_name"])
+                if item.get("parent_name")
+                else None,
             )
             for item in raw_data
         ]
         return cls(areas)
 
     def get(self, area_id: str) -> AreaCatalogEntry | None:
+        """Return the area with this id, or None."""
         return self._by_id.get(area_id)
 
     def search(self, query: str, limit: int = 20) -> list[AreaCatalogEntry]:
+        """Return areas whose name matches the query, best first."""
         cleaned_query = normalize_text(query)
         if not cleaned_query:
             return self._areas[:limit]
@@ -109,7 +96,6 @@ class AreaCatalog:
         scored.sort(
             key=lambda item: (
                 *item[0],
-                AREA_TYPE_PRIORITY.get(item[1].area_type, 99),
                 -(item[1].population or -1),
                 item[1].name,
                 item[1].state_code or "",
@@ -133,7 +119,9 @@ class AreaCatalog:
         if code.startswith(cleaned_query):
             return (1, 0, len(code) - len(cleaned_query), 0)
 
-        exact_name_score = self._score_exact_match(normalized_name, normalized_display_name, cleaned_query)
+        exact_name_score = self._score_exact_match(
+            normalized_name, normalized_display_name, cleaned_query
+        )
         if exact_name_score is not None:
             return exact_name_score
 
@@ -237,3 +225,9 @@ class AreaCatalog:
             if not matched:
                 return None
         return (token_positions[0], remainder)
+
+
+def parse_bounds(raw_bounds: list[float]) -> tuple[float, float, float, float]:
+    """Read a (left, bottom, right, top) box from JSON."""
+    left, bottom, right, top = map(float, raw_bounds)
+    return (left, bottom, right, top)

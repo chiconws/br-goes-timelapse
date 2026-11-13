@@ -1,0 +1,48 @@
+# Agent Notes: GOES Timelapse
+
+Language: README, DOCS, CHANGELOG and UI in **pt-BR**; code, comments and log messages in English.
+
+## Overview
+
+Home Assistant app (Supervisor add-on, `amd64` and `aarch64`) that builds WebP timelapses of GOES-19 imagery for Brazilian municipalities. It reads only the needed rows of NOAA's `ABI-L1b-RadF` C02/C13 and the `GLM-L2-LCFA` flashes over HTTP Range, renders frames locally and publishes them to `/media/goes_timelapse/`. The UI is served through ingress (FastAPI on port 8099).
+
+## Code structure
+
+Add-on folder: `goes_timelapse/` (`config.yaml`, `Dockerfile`, `rootfs/`, `DOCS.md`, `CHANGELOG.md`). Python package: `goes_timelapse/src/goes_timelapse/`.
+
+- `app.py`: FastAPI app, HTTP API and static UI; `__main__.py` starts uvicorn.
+- `core/`: settings from add-on options (`config.py`), SQLite state store (`state.py`), models, logging.
+- `data/`: municipality catalog and IBGE geometry (`assets/*.json.gz`).
+- `pipeline/`: NOAA listing and partial downloads (`downloader.py`, `partial_read.py`), raw cache, rendering, storage guard, the refresh loop (`service.py`).
+- `timeline.py`: frame plan and day/night logic.
+- `static/`: frontend (plain JS/CSS, no build step).
+- `scripts/build_area_catalog.py`: rebuilds `assets/areas.json.gz` from IBGE data.
+- `tests/`: pytest suite; `tests/helpers.py` writes synthetic netCDF/GeoTIFF fixtures.
+
+## Key concepts
+
+- Bump `version` in `goes_timelapse/config.yaml` and add a `CHANGELOG.md` entry for every release; Supervisor offers the update from that version.
+- Images are prebuilt: `.github/workflows/builder.yaml` builds every `arch` on each PR and, on push to `main`, publishes `ghcr.io/chiconws/br-goes-timelapse:<version>` (multi-arch, with `<arch>-br-goes-timelapse`). The Supervisor pulls the image named by `image:` in `config.yaml`, so the version must reach `main` together with the code. A published version is never overwritten. Runtime deps live in `goes_timelapse/requirements.txt`.
+- No `build.yaml`: the multi-arch base comes from `ARG BUILD_FROM` in the `Dockerfile`. The ha-test deploy script strips `image:` from its copy so the Supervisor builds the local code.
+- One cache folder per municipality; GLM flashes are shared.
+
+## Local validation (before push)
+
+```bash
+SKIP=no-commit-to-branch .venv/bin/prek run --all-files --hook-stage manual   # ruff, format, codespell, yamllint, prettier, zizmor, markdownlint, mypy, Pyright
+.venv/bin/coverage run -m pytest -q && .venv/bin/coverage report
+```
+
+Git hook: `.venv/bin/prek install` once per clone. Contributor setup: `CONTRIBUTING.md`.
+
+## Deviations from standard
+
+- Not a Home Assistant integration: no `custom_components/`, manifest, `hacs.json`, config flow, translations, quality scale, HACS/hassfest workflows or Marketplace badges.
+- Python **3.13** for `.venv`, CI, ruff `target-version`, mypy and Pyright: it is the `python3` of the add-on base image (Debian trixie). `numpy>=2.1` because numpy 1.26 has no cp313 wheels.
+- No PHACC: the tests use plain `pytest` + `pytest-asyncio`.
+- `CHANGELOG.md` is kept by hand: the Supervisor shows it in the add-on update dialog.
+- User-facing status strings are generated in pt-BR in Python (no translation layer); codespell ignores `erro`, `atual`, `limite` and the IBGE field `nome`.
+- Prettier runs on JSON/YAML only (the frontend is not reformatted).
+- Release tag must match `version` in `goes_timelapse/config.yaml`.
+- Ruff `SLF001` is off in `tests/`: the tests drive the service through its private helpers.
+- Coverage floor is 80%: tests for the whole-file downloader, Geo2Grid and the netCDF Rad/IR paths were dropped with that code in 1.2.0, and the Range-read downloader has no replacement suite yet.

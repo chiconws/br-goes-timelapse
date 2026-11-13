@@ -1,13 +1,16 @@
+"""SQLite store for tracked municipalities."""
+
 from __future__ import annotations
 
+from collections.abc import Callable
+import contextlib
+from datetime import UTC, datetime
 import logging
+from pathlib import Path
 import sqlite3
 import threading
-from datetime import UTC, datetime
-from pathlib import Path
 
 from goes_timelapse.core.models import AreaCatalogEntry, TrackedArea
-
 
 LOGGER = logging.getLogger(__name__)
 SQLITE_BUSY_TIMEOUT_MS = 30_000
@@ -19,7 +22,10 @@ RETRYABLE_SQLITE_ERRORS = (
 
 
 class StateStore:
+    """Persist tracked municipalities, their status and markers."""
+
     def __init__(self, db_path: Path):
+        """Open the database at db_path and create missing tables."""
         self._db_path = db_path
         self._lock = threading.RLock()
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -27,6 +33,7 @@ class StateStore:
         self._initialize()
 
     def close(self) -> None:
+        """Close the database connection."""
         with self._lock:
             self._connection.close()
 
@@ -54,10 +61,8 @@ class StateStore:
         return connection
 
     def _reopen_locked(self) -> None:
-        try:
+        with contextlib.suppress(sqlite3.Error):
             self._connection.close()
-        except sqlite3.Error:
-            pass
         self._connection = self._connect()
 
     def _initialize(self) -> None:
@@ -92,12 +97,18 @@ class StateStore:
     def _ensure_tracked_area_columns(self) -> None:
         existing_columns = {
             str(row[1])
-            for row in self._connection.execute("PRAGMA table_info(tracked_areas)").fetchall()
+            for row in self._connection.execute(
+                "PRAGMA table_info(tracked_areas)"
+            ).fetchall()
         }
         if "marker_lat" not in existing_columns:
-            self._connection.execute("ALTER TABLE tracked_areas ADD COLUMN marker_lat REAL")
+            self._connection.execute(
+                "ALTER TABLE tracked_areas ADD COLUMN marker_lat REAL"
+            )
         if "marker_lon" not in existing_columns:
-            self._connection.execute("ALTER TABLE tracked_areas ADD COLUMN marker_lon REAL")
+            self._connection.execute(
+                "ALTER TABLE tracked_areas ADD COLUMN marker_lon REAL"
+            )
 
     def _maybe_migrate_municipality_table(self) -> None:
         cursor = self._connection.execute(
@@ -139,11 +150,13 @@ class StateStore:
         )
 
     def count_tracked(self) -> int:
+        """Return how many municipalities are tracked."""
         with self._lock:
             cursor = self._connection.execute("SELECT COUNT(*) FROM tracked_areas")
             return int(cursor.fetchone()[0])
 
     def list_tracked(self) -> list[TrackedArea]:
+        """Return every tracked municipality."""
         with self._lock:
             cursor = self._connection.execute(
                 """
@@ -157,6 +170,7 @@ class StateStore:
             return [self._row_to_tracked(row) for row in cursor.fetchall()]
 
     def get_tracked(self, area_id: str) -> TrackedArea | None:
+        """Return one tracked municipality, or None."""
         with self._lock:
             cursor = self._connection.execute(
                 """
@@ -174,6 +188,7 @@ class StateStore:
             return self._row_to_tracked(row)
 
     def tracked_ids(self) -> list[str]:
+        """Return the ids of tracked municipalities."""
         with self._lock:
             cursor = self._connection.execute(
                 "SELECT area_id FROM tracked_areas ORDER BY tracked_at ASC"
@@ -181,9 +196,11 @@ class StateStore:
             return [str(row[0]) for row in cursor.fetchall()]
 
     def is_tracked(self, area_id: str) -> bool:
+        """Return whether area_id is tracked."""
         return self.get_tracked(area_id) is not None
 
     def upsert_tracked(self, area: AreaCatalogEntry, status: str = "queued") -> None:
+        """Track a municipality, or refresh its catalog fields."""
         now = self._now()
         existing = self.get_tracked(area.area_id)
         tracked_at = existing.tracked_at if existing is not None else now
@@ -224,6 +241,7 @@ class StateStore:
         self._run_write(operation)
 
     def remove_tracked(self, area_id: str) -> None:
+        """Stop tracking a municipality."""
         self._run_write(
             lambda: self._connection.execute(
                 "DELETE FROM tracked_areas WHERE area_id = ?",
@@ -239,8 +257,8 @@ class StateStore:
         last_error: str | None = None,
         latest_source_timestamp: str | None = None,
         media_path: str | None = None,
-        snippet_path: str | None = None,
     ) -> None:
+        """Update the status, message and outputs of a tracked municipality."""
         updates = {
             "status": status,
             "updated_at": self._now(),
@@ -250,14 +268,12 @@ class StateStore:
             updates["latest_source_timestamp"] = latest_source_timestamp
         if media_path is not None:
             updates["media_path"] = media_path
-        if snippet_path is not None:
-            updates["snippet_path"] = snippet_path
         assignments = ", ".join(f"{column} = :{column}" for column in updates)
         updates["area_id"] = area_id
 
         def operation() -> None:
             self._connection.execute(
-                f"UPDATE tracked_areas SET {assignments} WHERE area_id = :area_id",
+                f"UPDATE tracked_areas SET {assignments} WHERE area_id = :area_id",  # noqa: S608 - column names are fixed, values are bound
                 updates,
             )
 
@@ -270,6 +286,7 @@ class StateStore:
         marker_lat: float | None,
         marker_lon: float | None,
     ) -> None:
+        """Set or clear the marker of a tracked municipality."""
         self._run_write(
             lambda: self._connection.execute(
                 """
@@ -281,13 +298,13 @@ class StateStore:
             )
         )
 
-    def _run_write(self, operation) -> None:
+    def _run_write(self, operation: Callable[[], object]) -> None:
         with self._lock:
             for attempt in range(2):
                 try:
                     operation()
                     self._connection.commit()
-                    return
+                    return  # noqa: TRY300 - return inside the retry loop
                 except sqlite3.OperationalError as err:
                     if attempt == 0 and self._is_retryable_operational_error(err):
                         LOGGER.warning(
@@ -321,8 +338,12 @@ class StateStore:
             latest_source_timestamp=row["latest_source_timestamp"],
             media_path=row["media_path"],
             snippet_path=row["snippet_path"],
-            marker_lat=float(row["marker_lat"]) if row["marker_lat"] is not None else None,
-            marker_lon=float(row["marker_lon"]) if row["marker_lon"] is not None else None,
+            marker_lat=float(row["marker_lat"])
+            if row["marker_lat"] is not None
+            else None,
+            marker_lon=float(row["marker_lon"])
+            if row["marker_lon"] is not None
+            else None,
         )
 
     @staticmethod
