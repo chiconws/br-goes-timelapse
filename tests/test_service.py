@@ -781,7 +781,7 @@ def test_build_frame_specs_skips_transition_slot_when_blend_pair_is_missing(
     area = catalog.get("municipio-3205309")
     assert area is not None
 
-    infrared_dir = settings.raw_dir / "infrared"
+    infrared_dir = settings.raw_dir / "infrared" / area.area_id
     infrared_dir.mkdir(parents=True, exist_ok=True)
     infrared_path = (
         infrared_dir
@@ -1358,7 +1358,7 @@ async def test_refresh_requeues_area_when_cache_is_newer_than_rendered_media(
             )
         ]
 
-    async def fake_refresh_latest():
+    async def fake_refresh_latest(**_kwargs):
         return DownloadReport(
             kept_files=[newest_raw],
             downloaded_count=0,
@@ -1384,6 +1384,7 @@ async def test_refresh_requeues_area_when_cache_is_newer_than_rendered_media(
     tracked = state_store.get_tracked(area.area_id)
     assert tracked is not None
     assert tracked.status == "queued"
+    assert service._status["last_poll_error"] is None
     state_store.close()
 
 
@@ -1417,7 +1418,7 @@ async def test_refresh_raw_frames_prunes_using_runtime_cache_policy(
             )
         ]
 
-    async def fake_refresh_latest():
+    async def fake_refresh_latest(**_kwargs):
         return DownloadReport(
             kept_files=[],
             downloaded_count=0,
@@ -1439,6 +1440,7 @@ async def test_refresh_raw_frames_prunes_using_runtime_cache_policy(
     await service.refresh_raw_frames()
 
     assert prune_calls == ["called"]
+    assert service._status["last_poll_error"] is None
     state_store.close()
 
 
