@@ -211,7 +211,7 @@ addopts = "--strict-config --strict-markers"
 
 [tool.coverage.run]
 branch = true
-source = ["goes_timelapse"]
+source = ["goes_timelapse/src/goes_timelapse"]
 
 [tool.coverage.report]
 # ratchet upwards only
