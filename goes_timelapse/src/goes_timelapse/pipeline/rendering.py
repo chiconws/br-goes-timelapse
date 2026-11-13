@@ -714,7 +714,6 @@ def _read_crop(path: Path, plan: RenderPlan) -> Image.Image:
                 src_crs=WGS84_CRS,
                 dst_transform=dst_transform,
                 dst_crs=WGS84_CRS,
-                dst_nodata=0,
                 resampling=resampling,
             )
     return Image.fromarray(np.dstack((gray, gray, gray, alpha)))

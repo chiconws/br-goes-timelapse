@@ -37,7 +37,7 @@ Git hook: `.venv/bin/prek install` once per clone. Contributor setup: `CONTRIBUT
 ## Deviations from standard
 
 - Not a Home Assistant integration: no `custom_components/`, manifest, `hacs.json`, config flow, translations, quality scale, HACS/hassfest workflows or Marketplace badges.
-- Python **3.11** for `.venv`, CI, ruff `target-version`, mypy and Pyright: it is the `python3` of the add-on base image (Debian bookworm), and `numpy<2` has no 3.14 wheels.
+- Python **3.13** for `.venv`, CI, ruff `target-version`, mypy and Pyright: it is the `python3` of the add-on base image (Debian trixie). `numpy>=2.1` because numpy 1.26 has no cp313 wheels.
 - No PHACC: the tests use plain `pytest` + `pytest-asyncio`.
 - `CHANGELOG.md` is kept by hand: the Supervisor shows it in the add-on update dialog.
 - User-facing status strings are generated in pt-BR in Python (no translation layer); codespell ignores `erro`, `atual`, `limite` and the IBGE field `nome`.

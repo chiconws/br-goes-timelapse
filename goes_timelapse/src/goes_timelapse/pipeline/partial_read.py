@@ -14,7 +14,7 @@ from pathlib import Path
 import struct
 import threading
 import time
-from typing import Any, cast
+from typing import Any, cast, override
 from urllib.parse import urlsplit
 import zlib
 
@@ -25,7 +25,6 @@ from rasterio import Affine
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
 from rasterio.warp import reproject, transform_bounds
-from typing_extensions import override
 
 LOGGER = logging.getLogger(__name__)
 WGS84_CRS = CRS.from_epsg(4326)

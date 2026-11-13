@@ -11,12 +11,11 @@ from pathlib import Path
 import re
 import socket
 from time import perf_counter
-from typing import Any
+from typing import Any, TypedDict
 from urllib.parse import quote
 import xml.etree.ElementTree as ET
 
 import aiohttp
-from typing_extensions import TypedDict
 
 from goes_timelapse import __version__
 from goes_timelapse.core.logging_utils import get_logger

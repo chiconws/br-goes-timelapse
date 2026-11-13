@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-
-from typing_extensions import TypedDict
+from typing import TypedDict
 
 RAW_SOURCE_VISIBLE = "visible"
 RAW_SOURCE_INFRARED = "infrared"

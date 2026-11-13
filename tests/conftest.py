@@ -93,7 +93,7 @@ def settings(tmp_path: Path) -> Settings:
 
 
 @pytest.fixture
-def client(settings: Settings) -> Generator[TestClient, None, None]:
+def client(settings: Settings) -> Generator[TestClient]:
     """API test client without background tasks."""
     app = create_app(settings=settings, start_background_tasks=False)
     with TestClient(app) as test_client:

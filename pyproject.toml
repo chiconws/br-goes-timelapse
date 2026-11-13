@@ -7,17 +7,16 @@ name = "goes-timelapse"
 version = "0.1.0"
 description = "Serviço do app GOES Timelapse para o Home Assistant"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
   "aiohttp>=3.10,<4.0",
   "astral>=3.2,<4.0",
   "fastapi>=0.115,<1.0",
-  "numpy>=1.26,<2.0",
+  "numpy>=2.1,<3.0",
   "pillow>=11.0,<12.0",
   "h5py>=3.11,<4.0",
   "rasterio>=1.4.4,<2.0",
   "affine>=3.0",
-  "typing_extensions>=4.12,<5.0",
   "uvicorn>=0.34,<1.0",
 ]
 
@@ -42,8 +41,8 @@ goes_timelapse = ["assets/*.json.gz", "static/*"]
 # Ruff and mypy mirror home-assistant/core pyproject.toml / mypy.ini.
 # Core-only and Home Assistant-specific entries are left out.
 [tool.ruff]
-# Python of the add-on image (Debian bookworm), so fixes never use newer syntax.
-target-version = "py311"
+# Python of the add-on image (Debian trixie), so fixes never use newer syntax.
+target-version = "py313"
 
 [tool.ruff.lint]
 select = [
@@ -221,7 +220,7 @@ show_missing = true
 skip_empty = true
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.13"
 mypy_path = "goes_timelapse/src"
 explicit_package_bases = true
 show_error_codes = true
@@ -258,7 +257,7 @@ disable_error_code = ["arg-type", "explicit-override", "method-assign", "misc"]
 [tool.pyright]
 venvPath = "."
 venv = ".venv"
-pythonVersion = "3.11"
+pythonVersion = "3.13"
 include = ["goes_timelapse/src", "tests", "scripts"]
 # Local editor tooling (gitignored), run from its own venv.
 ignore = [".vscode"]
