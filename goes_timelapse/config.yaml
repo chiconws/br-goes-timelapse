@@ -4,6 +4,7 @@ slug: goes_timelapse
 description: Gera animações WebP do GOES-19 para municípios do Brasil.
 url: https://github.com/chiconws/br-goes-timelapse
 arch:
+  - aarch64
   - amd64
 startup: services
 boot: auto

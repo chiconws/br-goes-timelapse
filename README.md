@@ -26,11 +26,11 @@ Este repositório contém um app do Home Assistant para acompanhar municípios b
 ## Requisitos
 
 - Home Assistant com Supervisor.
-- Arquitetura `amd64`.
+- Arquitetura `amd64` ou `aarch64`.
 
 ## Compatibilidade de arquitetura
 
-Hoje este add-on está publicado apenas para `amd64`, ou seja, ele funciona em instalações Home Assistant rodando em CPU `x86_64`.
+Este add-on está publicado para `amd64` (CPU `x86_64`) e `aarch64` (ARM de 64 bits).
 
 Exemplos que funcionam:
 
@@ -38,16 +38,14 @@ Exemplos que funcionam:
 - NUC Intel
 - desktop ou notebook x86_64 reaproveitado
 - VM x86_64 em Proxmox, VMware ou VirtualBox
+- Raspberry Pi 4 ou 5 com sistema de 64 bits
+- Home Assistant Green ou Yellow
+- outras placas ARM de 64 bits (`aarch64`)
 
-Exemplos que não funcionam com o pacote atual:
+Exemplos que não funcionam:
 
-- Raspberry Pi 3
-- Raspberry Pi 4
-- Raspberry Pi 5
-- Home Assistant Yellow
-- Orange Pi e outras placas ARM
-
-Para esses dispositivos ARM, seria necessário publicar builds específicas para `aarch64`/`armv7`.
+- sistemas ARM de 32 bits (`armv7`/`armhf`), como Home Assistant OS 32 bits em Raspberry Pi
+- `i386`
 
 ## Uso de rede
 
